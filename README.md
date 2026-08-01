@@ -34,10 +34,13 @@ recall get <id>                             Print a command to stdout (counts as
 recall edit <id> [-c <cmd>] [-d <desc>] …   Change a command, description, or tags
 recall delete <id> [-y]                      Delete (asks first unless -y)
 recall export                               Dump all memories as JSONL
+recall import <file>                        Import memories from a JSONL file
 recall init <bash|zsh>                       Print shell integration for --last
 ```
 
-Search matches the words you type against each memory's command, description, and tags — so `docker disk cleanup` finds it even if those words aren't in the command itself. Filler words in a longer query are ignored.
+Search matches the words you type against each memory's command, description, and tags — so `docker disk cleanup` finds it even if those words aren't in the command itself. Filler words in a longer query are ignored, and commands you reuse often rank higher.
+
+Keep separate collections (work, personal, a project) with `--db <path>` on any command, or the `RECALL_DB` environment variable.
 
 ## Save the previous command
 
@@ -60,12 +63,12 @@ recall add --last -d 'why this mattered' -t sometag
 ## Principles
 
 - **Local-first and offline.** Everything lives in a single SQLite file on your machine (`~/.local/share/recall/` on Linux, `~/Library/Application Support/recall/` on macOS). No account, no network, no telemetry.
-- **Safe by default.** `get` and search print the command — nothing runs on its own. The database is created with user-only permissions.
-- **Yours to keep.** `recall export` dumps everything to JSONL any time.
+- **Safe by default.** `get` and search print the command — nothing runs on its own. Saving warns when a command looks like it holds a secret, and the database is created with user-only permissions.
+- **Yours to keep.** `recall export` / `recall import` round-trip the whole collection through JSONL any time.
 
 ## Status
 
-Usable today: the full capture → search → reuse loop, including an interactive picker. Still to come: usage-based ranking, secret warnings on capture, and JSONL import. Not yet published to a package manager.
+Usable today: the full capture → search → reuse loop — interactive picker, `--last` capture, usage-based ranking, secret warnings, and JSONL import/export. Still to come: a shell-history picker, configurable recall/save keybindings, Fish support, and importers for pet/navi/atuin. Not yet published to a package manager.
 
 ## License
 
