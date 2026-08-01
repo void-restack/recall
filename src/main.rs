@@ -3,6 +3,7 @@ mod commands;
 mod memory;
 mod paths;
 mod search;
+mod secrets;
 mod shell;
 mod store;
 mod tui;

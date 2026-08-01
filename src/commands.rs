@@ -9,6 +9,7 @@ use crate::{paths, shell};
 
 pub fn add(args: AddArgs) -> Result<()> {
     let command = resolve_command(args.command, args.last)?;
+    warn_about_secrets(&command, args.force)?;
     let store = Store::open()?;
     let duplicates = store.ids_with_command(&command)?;
     let new = NewMemory {
@@ -174,8 +175,30 @@ pub fn delete(args: DeleteArgs) -> Result<()> {
 }
 
 fn confirm(m: &CommandMemory) -> Result<bool> {
+    prompt_yes(&format!("delete #{}  {} ? [y/N] ", m.id, m.command))
+}
+
+/// Warn if the command looks like it holds a secret. In an interactive terminal,
+/// let the user cancel; otherwise (piped or `--force`) the warning is advisory.
+fn warn_about_secrets(command: &str, force: bool) -> Result<()> {
+    use std::io::IsTerminal;
+    let found = crate::secrets::scan(command);
+    if found.is_empty() {
+        return Ok(());
+    }
+    eprintln!("warning: this command may contain a secret ({})", found.join(", "));
+    if force || !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    if !prompt_yes("save anyway? [y/N] ")? {
+        anyhow::bail!("not saved");
+    }
+    Ok(())
+}
+
+fn prompt_yes(question: &str) -> Result<bool> {
     use std::io::Write;
-    eprint!("delete #{}  {} ? [y/N] ", m.id, m.command);
+    eprint!("{question}");
     std::io::stderr().flush()?;
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;

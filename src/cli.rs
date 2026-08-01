@@ -43,6 +43,10 @@ pub struct AddArgs {
     #[arg(long)]
     pub last: bool,
 
+    /// Save even if the command looks like it contains a secret
+    #[arg(short, long)]
+    pub force: bool,
+
     /// Short description of what it is for. Omit to save a Draft and annotate later.
     #[arg(short, long)]
     pub description: Option<String>,
