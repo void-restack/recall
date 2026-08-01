@@ -16,6 +16,12 @@ pub enum Command {
 
     /// Search Memories by fuzzy, typo-tolerant matching
     Search(SearchArgs),
+
+    /// Print a Memory's command to stdout (and count it as used)
+    Get(GetArgs),
+
+    /// Export all Memories as JSONL
+    Export,
 }
 
 #[derive(Args)]
@@ -41,4 +47,10 @@ pub struct SearchArgs {
     /// Maximum number of results to show
     #[arg(short, long, default_value_t = 20)]
     pub limit: usize,
+}
+
+#[derive(Args)]
+pub struct GetArgs {
+    /// The id shown by `list` or `search`
+    pub id: i64,
 }

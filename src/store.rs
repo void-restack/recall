@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
 use crate::memory::{CommandMemory, NewMemory};
 use crate::paths;
@@ -25,18 +25,22 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        // v0.1 schema; later migrations branch on `PRAGMA user_version`.
-        self.conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS memories (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                command     TEXT    NOT NULL,
-                description TEXT,
-                tags        TEXT    NOT NULL DEFAULT '[]',
-                created_at  INTEGER NOT NULL,
-                updated_at  INTEGER NOT NULL,
-                use_count   INTEGER NOT NULL DEFAULT 0
-            );",
-        )?;
+        // Each step runs once and bumps `user_version`; new steps append below.
+        let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version < 1 {
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS memories (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command     TEXT    NOT NULL,
+                    description TEXT,
+                    tags        TEXT    NOT NULL DEFAULT '[]',
+                    created_at  INTEGER NOT NULL,
+                    updated_at  INTEGER NOT NULL,
+                    use_count   INTEGER NOT NULL DEFAULT 0
+                );
+                PRAGMA user_version = 1;",
+            )?;
+        }
         Ok(())
     }
 
@@ -58,26 +62,43 @@ impl Store {
         })
     }
 
+    pub fn get(&self, id: i64) -> Result<Option<CommandMemory>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, command, description, tags, created_at, updated_at, use_count
+             FROM memories WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map([id], row_to_memory)?;
+        rows.next().transpose().context("reading memory")
+    }
+
     pub fn list(&self) -> Result<Vec<CommandMemory>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, command, description, tags, created_at, updated_at, use_count
              FROM memories ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let tags_json: String = row.get("tags")?;
-            Ok(CommandMemory {
-                id: row.get("id")?,
-                command: row.get("command")?,
-                description: row.get("description")?,
-                tags: serde_json::from_str(&tags_json).unwrap_or_default(),
-                created_at: row.get("created_at")?,
-                updated_at: row.get("updated_at")?,
-                use_count: row.get("use_count")?,
-            })
-        })?;
+        let rows = stmt.query_map([], row_to_memory)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("reading memories")
     }
+
+    pub fn record_use(&self, id: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE memories SET use_count = use_count + 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+}
+
+fn row_to_memory(row: &Row) -> rusqlite::Result<CommandMemory> {
+    let tags_json: String = row.get("tags")?;
+    Ok(CommandMemory {
+        id: row.get("id")?,
+        command: row.get("command")?,
+        description: row.get("description")?,
+        tags: serde_json::from_str(&tags_json).unwrap_or_default(),
+        created_at: row.get("created_at")?,
+        updated_at: row.get("updated_at")?,
+        use_count: row.get("use_count")?,
+    })
 }
 
 #[cfg(unix)]

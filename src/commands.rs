@@ -2,7 +2,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::cli::{AddArgs, SearchArgs};
+use crate::cli::{AddArgs, GetArgs, SearchArgs};
 use crate::memory::{self, CommandMemory, NewMemory};
 use crate::store::Store;
 
@@ -46,6 +46,26 @@ pub fn search(args: SearchArgs) -> Result<()> {
     }
     for m in hits {
         print_row(m);
+    }
+    Ok(())
+}
+
+pub fn get(args: GetArgs) -> Result<()> {
+    let store = Store::open()?;
+    match store.get(args.id)? {
+        Some(m) => {
+            println!("{}", m.command);
+            store.record_use(m.id)?;
+            Ok(())
+        }
+        None => anyhow::bail!("no memory #{}", args.id),
+    }
+}
+
+pub fn export() -> Result<()> {
+    let store = Store::open()?;
+    for m in store.list()? {
+        println!("{}", serde_json::to_string(&m)?);
     }
     Ok(())
 }

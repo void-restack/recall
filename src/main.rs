@@ -15,5 +15,7 @@ fn main() -> anyhow::Result<()> {
         Command::Add(args) => commands::add(args),
         Command::List => commands::list(),
         Command::Search(args) => commands::search(args),
+        Command::Get(args) => commands::get(args),
+        Command::Export => commands::export(),
     }
 }
