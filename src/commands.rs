@@ -83,8 +83,8 @@ fn read_last_command() -> Result<String> {
 pub fn init(args: InitArgs) -> Result<()> {
     let last_file = paths::last_command_path()?;
     let script = match args.shell {
-        Shell::Zsh => shell::zsh(&last_file),
-        Shell::Bash => shell::bash(&last_file),
+        Shell::Zsh => shell::zsh(&last_file, args.keys),
+        Shell::Bash => shell::bash(&last_file, args.keys),
     };
     print!("{script}");
     Ok(())

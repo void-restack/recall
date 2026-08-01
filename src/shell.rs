@@ -16,6 +16,27 @@ autoload -Uz add-zsh-hook
 add-zsh-hook preexec _recall_record_last
 "#;
 
+// Alt+R inserts a recalled command at the cursor (never executes it); Alt+S opens
+// the capture form for the command you just ran. Cancelling either leaves the line
+// untouched.
+const ZSH_KEYS: &str = r#"
+recall-recall-widget() {
+  local selected
+  selected="$(recall </dev/tty)"
+  [[ -n "$selected" ]] && LBUFFER="${LBUFFER}${selected}"
+  zle reset-prompt
+}
+zle -N recall-recall-widget
+bindkey '^[r' recall-recall-widget
+
+recall-save-widget() {
+  recall add --last </dev/tty >/dev/tty 2>&1
+  zle reset-prompt
+}
+zle -N recall-save-widget
+bindkey '^[s' recall-save-widget
+"#;
+
 const BASH: &str = r#"# recall shell integration (bash)
 # enable with:  eval "$(recall init bash)"
 _recall_last_file='__LAST_FILE__'
@@ -34,10 +55,33 @@ case "$PROMPT_COMMAND" in
 esac
 "#;
 
-pub fn zsh(last_file: &Path) -> String {
-    ZSH.replace("__LAST_FILE__", &last_file.to_string_lossy())
+const BASH_KEYS: &str = r#"
+recall-recall-widget() {
+  local selected
+  selected="$(recall </dev/tty)"
+  READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${selected}${READLINE_LINE:$READLINE_POINT}"
+  READLINE_POINT=$(( READLINE_POINT + ${#selected} ))
+}
+bind -x '"\er": recall-recall-widget'
+
+recall-save-widget() {
+  recall add --last </dev/tty >/dev/tty 2>&1
+}
+bind -x '"\es": recall-save-widget'
+"#;
+
+pub fn zsh(last_file: &Path, keys: bool) -> String {
+    let mut script = ZSH.replace("__LAST_FILE__", &last_file.to_string_lossy());
+    if keys {
+        script.push_str(ZSH_KEYS);
+    }
+    script
 }
 
-pub fn bash(last_file: &Path) -> String {
-    BASH.replace("__LAST_FILE__", &last_file.to_string_lossy())
+pub fn bash(last_file: &Path, keys: bool) -> String {
+    let mut script = BASH.replace("__LAST_FILE__", &last_file.to_string_lossy());
+    if keys {
+        script.push_str(BASH_KEYS);
+    }
+    script
 }

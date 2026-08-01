@@ -129,4 +129,8 @@ pub struct InitArgs {
     /// Which shell to generate integration for
     #[arg(value_enum)]
     pub shell: Shell,
+
+    /// Also bind Alt+R (recall into the line) and Alt+S (save the last command)
+    #[arg(long)]
+    pub keys: bool,
 }
