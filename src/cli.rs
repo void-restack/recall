@@ -154,4 +154,12 @@ pub struct InitArgs {
     /// Also bind Alt+R (recall into the line) and Alt+S (save the last command)
     #[arg(long)]
     pub keys: bool,
+
+    /// Key sequence for the recall widget with --keys (shell syntax; default Alt+R)
+    #[arg(long)]
+    pub recall_key: Option<String>,
+
+    /// Key sequence for the save widget with --keys (shell syntax; default Alt+S)
+    #[arg(long)]
+    pub save_key: Option<String>,
 }
