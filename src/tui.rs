@@ -28,8 +28,9 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(18)?;
 
+    let haystacks = search::build_haystacks(memories);
     let mut query = String::new();
-    let mut results = filter(&query, memories);
+    let mut results = filter(&query, memories, &haystacks);
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
     let mut confirming = false;
@@ -73,11 +74,11 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
             KeyCode::Down => move_selection(&mut state, results.len(), 1),
             KeyCode::Backspace => {
                 query.pop();
-                refilter(&query, memories, &mut results, &mut state);
+                refilter(&query, memories, &haystacks, &mut results, &mut state);
             }
             KeyCode::Char(c) if !ctrl => {
                 query.push(c);
-                refilter(&query, memories, &mut results, &mut state);
+                refilter(&query, memories, &haystacks, &mut results, &mut state);
             }
             _ => {}
         }
@@ -87,23 +88,21 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     Ok(outcome)
 }
 
-fn filter(query: &str, memories: &[CommandMemory]) -> Vec<usize> {
+fn filter(query: &str, memories: &[CommandMemory], haystacks: &[String]) -> Vec<usize> {
     if query.trim().is_empty() {
         return (0..memories.len()).collect();
     }
-    search::search(query, memories, 200)
-        .into_iter()
-        .filter_map(|hit| memories.iter().position(|m| m.id == hit.id))
-        .collect()
+    search::ranked_indices(query, memories, haystacks, 200)
 }
 
 fn refilter(
     query: &str,
     memories: &[CommandMemory],
+    haystacks: &[String],
     results: &mut Vec<usize>,
     state: &mut ListState,
 ) {
-    *results = filter(query, memories);
+    *results = filter(query, memories, haystacks);
     reselect(state, results.len());
 }
 
@@ -478,7 +477,8 @@ mod tests {
             mem(1, "docker ps", None, &[]),
             mem(2, "git stash", None, &[]),
         ];
-        assert_eq!(filter("", &memories), vec![0, 1]);
+        let haystacks = search::build_haystacks(&memories);
+        assert_eq!(filter("", &memories, &haystacks), vec![0, 1]);
     }
 
     #[test]
@@ -487,7 +487,8 @@ mod tests {
             mem(1, "docker ps", Some("list containers"), &["docker"]),
             mem(2, "git stash", Some("shelve changes"), &["git"]),
         ];
-        assert_eq!(filter("stash", &memories).first(), Some(&1));
+        let haystacks = search::build_haystacks(&memories);
+        assert_eq!(filter("stash", &memories, &haystacks).first(), Some(&1));
     }
 
     #[test]

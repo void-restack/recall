@@ -90,20 +90,24 @@ const STOPWORDS: &[&str] = &[
     "needed",
 ];
 
-/// Fuzzy, typo-tolerant search over each Memory's command, description, and tags,
-/// returning matches best-first. The only place that touches the fuzzy backend
-/// (frizbee), so swapping matchers stays a one-file change.
-pub fn search<'a>(
+/// Build the per-memory search text once. The picker holds onto this across
+/// keystrokes instead of rebuilding the whole haystack on every refilter.
+pub fn build_haystacks(memories: &[CommandMemory]) -> Vec<String> {
+    memories.iter().map(haystack_for).collect()
+}
+
+/// Rank memories against pre-built haystacks, best-first, returning their indices
+/// into `memories` directly (callers no longer need an id→index lookup).
+pub fn ranked_indices(
     query: &str,
-    memories: &'a [CommandMemory],
+    memories: &[CommandMemory],
+    haystacks: &[String],
     limit: usize,
-) -> Vec<&'a CommandMemory> {
+) -> Vec<usize> {
     if query.trim().is_empty() || memories.is_empty() {
         return Vec::new();
     }
-
-    let haystacks: Vec<String> = memories.iter().map(haystack_for).collect();
-    let (matched, score) = coverage(query, &haystacks);
+    let (matched, score) = coverage(query, haystacks);
 
     // Relevance first (terms matched, then match quality); Curated over Draft, then
     // usage — so a command reused often, and more recently, wins between equal matches.
@@ -117,7 +121,22 @@ pub fn search<'a>(
             .then(memories[b].last_used_at.cmp(&memories[a].last_used_at))
     });
     ranked.truncate(limit);
-    ranked.into_iter().map(|i| &memories[i]).collect()
+    ranked
+}
+
+/// Fuzzy, typo-tolerant search over each Memory's command, description, and tags,
+/// returning matches best-first. The only place that touches the fuzzy backend
+/// (frizbee), so swapping matchers stays a one-file change.
+pub fn search<'a>(
+    query: &str,
+    memories: &'a [CommandMemory],
+    limit: usize,
+) -> Vec<&'a CommandMemory> {
+    let haystacks = build_haystacks(memories);
+    ranked_indices(query, memories, &haystacks, limit)
+        .into_iter()
+        .map(|i| &memories[i])
+        .collect()
 }
 
 /// Rank plain lines (e.g. shell history) by the same fuzzy coverage, best first.
