@@ -1,0 +1,17 @@
+[package]
+name = "recall"
+version = "0.1.0"
+edition = "2024"
+description = "Local-first command memory for your terminal — save the commands you figure out once, find them by intent."
+repository = "https://github.com/void-restack/recall"
+rust-version = "1.85"
+# Not published yet: the final crate name and license are still open.
+publish = false
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+directories = "6"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
