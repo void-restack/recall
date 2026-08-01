@@ -166,6 +166,14 @@ impl App {
                     }
                     KeyCode::Up => move_selection(&mut self.state, self.results.len(), -1),
                     KeyCode::Down => move_selection(&mut self.state, self.results.len(), 1),
+                    KeyCode::Char('p') if ctrl => {
+                        move_selection(&mut self.state, self.results.len(), -1)
+                    }
+                    KeyCode::Char('n') if ctrl => {
+                        move_selection(&mut self.state, self.results.len(), 1)
+                    }
+                    KeyCode::PageUp => page_selection(&mut self.state, self.results.len(), -PAGE),
+                    KeyCode::PageDown => page_selection(&mut self.state, self.results.len(), PAGE),
                     _ => {
                         if self.query.handle_key(key) == Handled::Edited {
                             self.dirty = true;
@@ -302,12 +310,25 @@ fn reselect(state: &mut ListState, len: usize) {
     state.select(selected);
 }
 
+/// Rows moved by PgUp/PgDn.
+const PAGE: isize = 10;
+
 fn move_selection(state: &mut ListState, len: usize, delta: isize) {
     if len == 0 {
         return;
     }
     let current = state.selected().unwrap_or(0) as isize;
     let next = (current + delta).rem_euclid(len as isize) as usize;
+    state.select(Some(next));
+}
+
+/// Like `move_selection` but clamped, not wrapped — paging past an end stops there.
+fn page_selection(state: &mut ListState, len: usize, delta: isize) {
+    if len == 0 {
+        return;
+    }
+    let current = state.selected().unwrap_or(0) as isize;
+    let next = (current + delta).clamp(0, len as isize - 1) as usize;
     state.select(Some(next));
 }
 
@@ -333,12 +354,14 @@ fn render_picker(
     theme: &Theme,
     now: i64,
 ) {
+    let area = f.area();
     let [top, middle, help] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(1),
         Constraint::Length(1),
     ])
-    .areas(f.area());
+    .areas(area);
+
     let prompt = "search: ";
     f.render_widget(
         Paragraph::new(format!("{prompt}{}", query.text()))
@@ -347,48 +370,102 @@ fn render_picker(
     );
     set_line_cursor(f, top, prompt.chars().count() + query.cursor_col());
 
-    let [list_area, preview_area] =
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
-
-    let preview = preview_text(
-        results,
-        memories,
-        state.selected(),
-        query.text(),
-        theme,
-        now,
-    );
-    f.render_widget(
-        Paragraph::new(preview)
-            .block(Block::bordered().title("details"))
-            .wrap(Wrap { trim: false }),
-        preview_area,
-    );
-
-    let items: Vec<ListItem> = results
-        .iter()
-        .map(|&i| ListItem::new(row_line(&memories[i], query.text(), theme)))
-        .collect();
-    let title = format!(
-        "{} match{}",
-        results.len(),
-        if results.len() == 1 { "" } else { "es" }
-    );
-    let list = List::new(items)
-        .block(Block::bordered().title(title))
-        .highlight_symbol("▌ ")
-        .highlight_style(theme.selection);
-    f.render_stateful_widget(list, list_area, state);
+    // Wide: list + preview pane. Medium: list + a 2-line detail strip. Narrow: list only.
+    if area.width >= 100 {
+        let [list_area, preview_area] =
+            Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
+                .areas(middle);
+        render_list(f, list_area, results, memories, state, query.text(), theme);
+        let preview = preview_text(
+            results,
+            memories,
+            state.selected(),
+            query.text(),
+            theme,
+            now,
+        );
+        f.render_widget(
+            Paragraph::new(preview)
+                .block(Block::bordered().title("details"))
+                .wrap(Wrap { trim: false }),
+            preview_area,
+        );
+    } else if area.width >= 60 {
+        let [list_area, strip] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(middle);
+        render_list(f, list_area, results, memories, state, query.text(), theme);
+        render_detail_strip(f, strip, results, memories, state.selected(), theme, now);
+    } else {
+        render_list(f, middle, results, memories, state, query.text(), theme);
+    }
 
     let help_line = if confirming {
         Line::styled("delete this memory?  y / n", theme.danger)
     } else {
-        Line::styled(
-            "↑/↓ move · enter print · ^o edit · ^x delete · esc cancel",
-            theme.dim,
-        )
+        Line::styled(footer_hint(area.width), theme.dim)
     };
     f.render_widget(Paragraph::new(help_line), help);
+}
+
+/// The footer adapts to width: the full key legend when there's room, a terse one
+/// when there isn't.
+fn footer_hint(width: u16) -> &'static str {
+    if width >= 76 {
+        "↑/↓ move · pgup/pgdn page · ⏎ print · ^o edit · ^x delete · esc quit"
+    } else {
+        "↑↓ move · ⏎ print · ^o edit · ^x del · esc quit"
+    }
+}
+
+fn render_list(
+    f: &mut Frame,
+    area: Rect,
+    results: &[usize],
+    memories: &[CommandMemory],
+    state: &mut ListState,
+    query: &str,
+    theme: &Theme,
+) {
+    // Reserve the interior minus the 2-cell highlight gutter for row text.
+    let text_width = Block::bordered().inner(area).width.saturating_sub(2) as usize;
+    let items: Vec<ListItem> = results
+        .iter()
+        .map(|&i| ListItem::new(row_line(&memories[i], query, theme, text_width)))
+        .collect();
+    let pos = state.selected().map_or(0, |i| i + 1);
+    let title = if results.is_empty() {
+        "no matches".to_string()
+    } else {
+        format!("{pos}/{}", results.len())
+    };
+    let list = List::new(items)
+        .block(Block::bordered().title(title))
+        .highlight_symbol("▌ ")
+        .highlight_style(theme.selection);
+    f.render_stateful_widget(list, area, state);
+}
+
+/// The medium-width stand-in for the preview pane: the command, then its why (or
+/// usage), on two lines truncated to fit.
+fn render_detail_strip(
+    f: &mut Frame,
+    area: Rect,
+    results: &[usize],
+    memories: &[CommandMemory],
+    selected: Option<usize>,
+    theme: &Theme,
+    now: i64,
+) {
+    let Some(m) = selected.and_then(|s| results.get(s)).map(|&i| &memories[i]) else {
+        return;
+    };
+    let width = area.width as usize;
+    let first = Line::from(fit_spans(program_spans(&m.command, theme), width));
+    let second = match m.description.as_deref().filter(|d| !d.is_empty()) {
+        Some(desc) => Line::styled(truncate_str(desc, width), theme.dim),
+        None => Line::styled(truncate_str(&usage_line(m, now), width), theme.dim),
+    };
+    f.render_widget(Paragraph::new(Text::from(vec![first, second])), area);
 }
 
 fn preview_text<'a>(
@@ -424,16 +501,7 @@ fn preview_text<'a>(
         ));
     }
 
-    let usage = if m.use_count == 0 {
-        "not used yet".to_string()
-    } else {
-        let mut s = format!("used {}×", m.use_count);
-        if let Some(last) = m.last_used_at {
-            s.push_str(&format!(" · last used {}", humanize_ago(now, last)));
-        }
-        s
-    };
-    lines.push(Line::styled(usage, theme.dim));
+    lines.push(Line::styled(usage_line(m, now), theme.dim));
 
     // Why this row matched: the terms that hit, and the filler dropped.
     if !query.trim().is_empty() {
@@ -453,16 +521,23 @@ fn preview_text<'a>(
 
 /// The command as a line, with the program (first whitespace token) in bold.
 fn program_first(command: &str, theme: &Theme) -> Line<'static> {
+    Line::from(program_spans(command, theme))
+}
+
+/// Spans for a command with the program (first whitespace token) bold.
+fn program_spans(command: &str, theme: &Theme) -> Vec<Span<'static>> {
     match command.split_once(char::is_whitespace) {
-        Some((head, rest)) => Line::from(vec![
+        Some((head, rest)) => vec![
             Span::styled(head.to_string(), theme.strong),
             Span::raw(format!(" {rest}")),
-        ]),
-        None => Line::from(Span::styled(command.to_string(), theme.strong)),
+        ],
+        None => vec![Span::styled(command.to_string(), theme.strong)],
     }
 }
 
-fn row_line(m: &CommandMemory, query: &str, theme: &Theme) -> Line<'static> {
+/// A row: matched-char-highlighted command, dim why, tag chips — truncated with an
+/// ellipsis to `width`, trimming the tail (tags, then why) before the command.
+fn row_line(m: &CommandMemory, query: &str, theme: &Theme, width: usize) -> Line<'static> {
     let mut spans = command_spans(&m.command, query, theme);
     if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
         spans.push(Span::styled(format!("  — {desc}"), theme.dim));
@@ -473,7 +548,63 @@ fn row_line(m: &CommandMemory, query: &str, theme: &Theme) -> Line<'static> {
             theme.tag,
         ));
     }
-    Line::from(spans)
+    Line::from(fit_spans(spans, width))
+}
+
+/// Truncate a span run to `width` columns, appending `…` when it overflows. Trims
+/// from the tail, so leading spans (the command) survive longest.
+fn fit_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let total: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    if total <= width {
+        return spans;
+    }
+    if width == 0 {
+        return Vec::new();
+    }
+    let budget = width - 1; // leave a cell for the ellipsis
+    let mut out = Vec::new();
+    let mut used = 0;
+    for span in spans {
+        let w = span.content.chars().count();
+        if used + w <= budget {
+            used += w;
+            out.push(span);
+        } else {
+            let take = budget - used;
+            if take > 0 {
+                let head: String = span.content.chars().take(take).collect();
+                out.push(Span::styled(head, span.style));
+            }
+            break;
+        }
+    }
+    out.push(Span::raw("…"));
+    out
+}
+
+/// Char-truncate a string to `width`, appending `…` when it overflows.
+fn truncate_str(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(width - 1).collect();
+    out.push('…');
+    out
+}
+
+/// One-line usage summary: `used 14× · last used 2d ago`, or `not used yet`.
+fn usage_line(m: &CommandMemory, now: i64) -> String {
+    if m.use_count == 0 {
+        return "not used yet".to_string();
+    }
+    let mut s = format!("used {}×", m.use_count);
+    if let Some(last) = m.last_used_at {
+        s.push_str(&format!(" · last used {}", humanize_ago(now, last)));
+    }
+    s
 }
 
 /// Split a command into spans, styling the query-matched characters. Highlighting
@@ -976,7 +1107,8 @@ mod tests {
 
         let query = LineEditor::new("docker");
         let theme = Theme::detect();
-        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        // ≥100 cols draws the side-by-side preview pane.
+        let mut terminal = Terminal::new(TestBackend::new(110, 12)).unwrap();
         terminal
             .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false, &theme, 0))
             .unwrap();
@@ -991,6 +1123,61 @@ mod tests {
         assert!(text.contains("search: docker"), "header missing:\n{text}");
         assert!(text.contains("docker ps"), "row/preview missing:\n{text}");
         assert!(text.contains("details"), "preview pane missing:\n{text}");
+    }
+
+    #[test]
+    fn narrow_layout_drops_the_preview_pane() {
+        let memories = vec![mem(1, "docker ps", Some("list containers"), &["docker"])];
+        let results = vec![0usize];
+        let mut state = ListState::default();
+        state.select(Some(0));
+        let query = LineEditor::new("docker");
+        let theme = Theme::detect();
+        let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
+        terminal
+            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false, &theme, 0))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !text.contains("details"),
+            "narrow view should have no pane:\n{text}"
+        );
+        assert!(text.contains("docker ps"), "row missing:\n{text}");
+    }
+
+    #[test]
+    fn fit_spans_truncates_the_tail_with_an_ellipsis() {
+        let theme = Theme::detect();
+        let m = mem(
+            1,
+            "docker ps",
+            Some("a very long description that overflows"),
+            &["docker"],
+        );
+        let line = row_line(&m, "", &theme, 16);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.chars().count() <= 16, "overflowed: {text:?}");
+        assert!(text.ends_with('…'), "no ellipsis: {text:?}");
+        assert!(
+            text.starts_with("docker"),
+            "command clipped first: {text:?}"
+        );
+    }
+
+    #[test]
+    fn paging_clamps_at_both_ends() {
+        let mut state = ListState::default();
+        state.select(Some(0));
+        page_selection(&mut state, 5, -PAGE);
+        assert_eq!(state.selected(), Some(0));
+        page_selection(&mut state, 5, PAGE);
+        assert_eq!(state.selected(), Some(4));
     }
 
     #[test]
