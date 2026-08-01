@@ -137,6 +137,120 @@ impl Drop for TerminalGuard {
     }
 }
 
+/// What the add form collected. Tags are raw text, split and normalized by the caller.
+pub struct AddForm {
+    pub command: String,
+    pub description: String,
+    pub tags: String,
+}
+
+/// Interactive capture: fill in command / description / tags. Returns `None` if
+/// cancelled. Draws on stderr, like the picker.
+pub fn add_form(initial_command: &str) -> Result<Option<AddForm>> {
+    let _guard = TerminalGuard::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let mut form = FormState::new(initial_command);
+
+    loop {
+        terminal.draw(|f| render_form(f, &form))?;
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => return Ok(None),
+            KeyCode::Char('c') if ctrl => return Ok(None),
+            KeyCode::Enter if !form.command.trim().is_empty() => {
+                return Ok(Some(form.into_add_form()));
+            }
+            KeyCode::Tab | KeyCode::Down => form.next(),
+            KeyCode::BackTab | KeyCode::Up => form.prev(),
+            KeyCode::Backspace => form.backspace(),
+            KeyCode::Char(c) => form.insert(c),
+            _ => {}
+        }
+    }
+}
+
+struct FormState {
+    command: String,
+    description: String,
+    tags: String,
+    focus: usize,
+}
+
+impl FormState {
+    fn new(command: &str) -> Self {
+        Self {
+            command: command.to_string(),
+            description: String::new(),
+            tags: String::new(),
+            focus: 0,
+        }
+    }
+
+    fn field(&mut self) -> &mut String {
+        match self.focus {
+            0 => &mut self.command,
+            1 => &mut self.description,
+            _ => &mut self.tags,
+        }
+    }
+
+    fn insert(&mut self, c: char) {
+        self.field().push(c);
+    }
+
+    fn backspace(&mut self) {
+        self.field().pop();
+    }
+
+    fn next(&mut self) {
+        self.focus = (self.focus + 1) % 3;
+    }
+
+    fn prev(&mut self) {
+        self.focus = (self.focus + 2) % 3;
+    }
+
+    fn into_add_form(self) -> AddForm {
+        AddForm {
+            command: self.command.trim().to_string(),
+            description: self.description,
+            tags: self.tags,
+        }
+    }
+}
+
+fn render_form(f: &mut Frame, form: &FormState) {
+    let [command, description, tags, help] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Min(1),
+    ])
+    .areas(f.area());
+
+    f.render_widget(field(&form.command, "command", form.focus == 0), command);
+    f.render_widget(field(&form.description, "why (description)", form.focus == 1), description);
+    f.render_widget(field(&form.tags, "tags (space or comma separated)", form.focus == 2), tags);
+    f.render_widget(Paragraph::new("tab move · enter save · esc cancel"), help);
+}
+
+fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
+    let cursor = if focused { "▊" } else { "" };
+    let border = if focused {
+        Style::new().add_modifier(Modifier::BOLD)
+    } else {
+        Style::new()
+    };
+    Paragraph::new(format!("{value}{cursor}")).block(Block::bordered().title(label).border_style(border))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +317,37 @@ mod tests {
             .collect();
         assert!(text.contains("search: docker"), "header missing:\n{text}");
         assert!(text.contains("docker ps"), "result row missing:\n{text}");
+    }
+
+    #[test]
+    fn form_edits_the_focused_field_and_cycles() {
+        let mut s = FormState::new("docker ps");
+        s.next();
+        s.insert('h');
+        s.insert('i');
+        assert_eq!(s.description, "hi");
+        s.prev();
+        s.backspace();
+        assert_eq!(s.command, "docker p");
+        s.prev();
+        s.insert('x');
+        assert_eq!(s.tags, "x");
+    }
+
+    #[test]
+    fn form_renders_its_fields_and_initial_command() {
+        let s = FormState::new("docker ps");
+        let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
+        terminal.draw(|f| render_form(f, &s)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("docker ps"), "command missing:\n{text}");
+        assert!(text.contains("command"));
+        assert!(text.contains("tags"));
     }
 }

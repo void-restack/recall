@@ -8,15 +8,44 @@ use crate::store::Store;
 use crate::{paths, shell};
 
 pub fn add(args: AddArgs) -> Result<()> {
+    use std::io::IsTerminal;
+    let interactive = std::io::stderr().is_terminal();
+    let no_annotations = args.description.is_none() && args.tag.is_empty();
+
+    // With no command argument and no annotation flags, an interactive terminal
+    // gets the capture form; --last pre-fills it with the previous command.
+    if interactive && no_annotations && args.command.is_none() {
+        let initial = if args.last { read_last_command()? } else { String::new() };
+        return add_via_form(initial, args.force);
+    }
+
     let command = resolve_command(args.command, args.last)?;
     warn_about_secrets(&command, args.force)?;
+    save_new(command, clean_description(args.description), memory::normalize_tags(args.tag))
+}
+
+fn add_via_form(initial: String, force: bool) -> Result<()> {
+    let Some(form) = crate::tui::add_form(&initial)? else {
+        eprintln!("cancelled");
+        return Ok(());
+    };
+    warn_about_secrets(&form.command, force)?;
+    let tags = memory::normalize_tags(split_tags(&form.tags));
+    save_new(form.command, clean_description(Some(form.description)), tags)
+}
+
+fn split_tags(raw: &str) -> Vec<String> {
+    raw.split([',', ' '])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn save_new(command: String, description: Option<String>, tags: Vec<String>) -> Result<()> {
     let store = Store::open()?;
     let duplicates = store.ids_with_command(&command)?;
-    let new = NewMemory {
-        command,
-        description: clean_description(args.description),
-        tags: memory::normalize_tags(args.tag),
-    };
+    let new = NewMemory { command, description, tags };
     let saved = store.insert(&new, now_millis())?;
 
     // id to stdout (scriptable), status to stderr.
