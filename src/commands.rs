@@ -1,9 +1,9 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 
-use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, InitArgs, SearchArgs, Shell};
-use crate::memory::{self, CommandMemory, NewMemory};
+use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, ImportArgs, InitArgs, SearchArgs, Shell};
+use crate::memory::{self, CommandMemory, ImportRecord, NewMemory};
 use crate::store::Store;
 use crate::{paths, shell};
 
@@ -125,6 +125,31 @@ pub fn export() -> Result<()> {
     for m in store.list()? {
         println!("{}", serde_json::to_string(&m)?);
     }
+    Ok(())
+}
+
+pub fn import(args: ImportArgs) -> Result<()> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(&args.file)
+        .with_context(|| format!("opening {}", args.file.display()))?;
+
+    // Validate every line before touching the store (see brief §15).
+    let mut records = Vec::new();
+    for (n, line) in std::io::BufReader::new(file).lines().enumerate() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let record: ImportRecord =
+            serde_json::from_str(&line).with_context(|| format!("line {}: invalid record", n + 1))?;
+        if record.command.trim().is_empty() {
+            anyhow::bail!("line {}: record has an empty command", n + 1);
+        }
+        records.push(record);
+    }
+
+    let count = Store::open()?.import_all(&records, now_millis())?;
+    eprintln!("imported {count} memories");
     Ok(())
 }
 

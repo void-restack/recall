@@ -30,6 +30,9 @@ pub enum Command {
     /// Export all Memories as JSONL
     Export,
 
+    /// Import Memories from a JSONL file (adds to the collection)
+    Import(ImportArgs),
+
     /// Print shell integration that enables `recall add --last`
     Init(InitArgs),
 }
@@ -103,6 +106,12 @@ pub struct DeleteArgs {
     /// Skip the confirmation prompt
     #[arg(short = 'y', long)]
     pub yes: bool,
+}
+
+#[derive(Args)]
+pub struct ImportArgs {
+    /// Path to a JSONL file (as produced by `recall export`)
+    pub file: std::path::PathBuf,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

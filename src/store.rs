@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, Row};
 
-use crate::memory::{CommandMemory, NewMemory};
+use crate::memory::{CommandMemory, ImportRecord, NewMemory};
 use crate::paths;
 
 pub struct Store {
@@ -131,6 +131,34 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()
             .context("looking for duplicates")
     }
+
+    /// Insert imported records additively (fresh ids, preserved timestamps/usage)
+    /// in one transaction, so a mid-import failure leaves the store untouched.
+    pub fn import_all(&self, records: &[ImportRecord], now: i64) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        for record in records {
+            let created = record.created_at.unwrap_or(now);
+            let updated = record.updated_at.unwrap_or(created);
+            let tags = crate::memory::normalize_tags(record.tags.clone());
+            let tags_json = serde_json::to_string(&tags)?;
+            tx.execute(
+                "INSERT INTO memories
+                 (command, description, tags, created_at, updated_at, use_count, last_used_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    record.command,
+                    record.description,
+                    tags_json,
+                    created,
+                    updated,
+                    record.use_count,
+                    record.last_used_at,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(records.len())
+    }
 }
 
 fn row_to_memory(row: &Row) -> rusqlite::Result<CommandMemory> {
@@ -205,5 +233,26 @@ mod tests {
         store.insert(&sample(), 2).unwrap();
         assert_eq!(store.ids_with_command("docker ps").unwrap(), vec![1, 2]);
         assert!(store.ids_with_command("nope").unwrap().is_empty());
+    }
+
+    #[test]
+    fn import_all_adds_records_with_fresh_ids() {
+        let store = Store::in_memory().unwrap();
+        let records = vec![ImportRecord {
+            command: "docker ps".into(),
+            description: Some("list".into()),
+            tags: vec!["docker".into()],
+            created_at: Some(10),
+            updated_at: Some(10),
+            use_count: 5,
+            last_used_at: Some(20),
+        }];
+        assert_eq!(store.import_all(&records, 999).unwrap(), 1);
+        let all = store.list().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, 1);
+        assert_eq!(all[0].command, "docker ps");
+        assert_eq!(all[0].use_count, 5);
+        assert_eq!(all[0].created_at, 10);
     }
 }

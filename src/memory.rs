@@ -27,6 +27,25 @@ pub struct NewMemory {
     pub tags: Vec<String>,
 }
 
+/// A record read from JSONL import. Everything but `command` is optional so
+/// hand-written files work as well as our own exports.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ImportRecord {
+    pub command: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub created_at: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<i64>,
+    #[serde(default)]
+    pub use_count: i64,
+    #[serde(default)]
+    pub last_used_at: Option<i64>,
+}
+
 /// Normalize so `Docker`, `docker`, and ` docker ` don't fragment the collection.
 pub fn normalize_tags(raw: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();

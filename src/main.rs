@@ -22,6 +22,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Edit(args)) => commands::edit(args),
         Some(Command::Delete(args)) => commands::delete(args),
         Some(Command::Export) => commands::export(),
+        Some(Command::Import(args)) => commands::import(args),
         Some(Command::Init(args)) => commands::init(args),
         None => commands::pick(),
     }
