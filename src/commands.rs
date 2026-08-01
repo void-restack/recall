@@ -10,6 +10,7 @@ use crate::{paths, shell};
 pub fn add(args: AddArgs) -> Result<()> {
     let command = resolve_command(args.command, args.last)?;
     let store = Store::open()?;
+    let duplicates = store.ids_with_command(&command)?;
     let new = NewMemory {
         command,
         description: clean_description(args.description),
@@ -21,6 +22,10 @@ pub fn add(args: AddArgs) -> Result<()> {
     println!("{}", saved.id);
     let kind = if saved.is_draft() { "draft " } else { "" };
     eprintln!("saved {kind}#{}", saved.id);
+    if !duplicates.is_empty() {
+        let ids: Vec<String> = duplicates.iter().map(|id| format!("#{id}")).collect();
+        eprintln!("note: same command already saved as {}", ids.join(", "));
+    }
     Ok(())
 }
 

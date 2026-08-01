@@ -113,6 +113,15 @@ impl Store {
             .execute("UPDATE memories SET use_count = use_count + 1 WHERE id = ?1", [id])?;
         Ok(())
     }
+
+    pub fn ids_with_command(&self, command: &str) -> Result<Vec<i64>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM memories WHERE command = ?1 ORDER BY id")?;
+        stmt.query_map([command], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("looking for duplicates")
+    }
 }
 
 fn row_to_memory(row: &Row) -> rusqlite::Result<CommandMemory> {
@@ -174,5 +183,14 @@ mod tests {
         store.record_use(m.id).unwrap();
         store.record_use(m.id).unwrap();
         assert_eq!(store.get(m.id).unwrap().unwrap().use_count, 2);
+    }
+
+    #[test]
+    fn ids_with_command_finds_duplicates() {
+        let store = Store::in_memory().unwrap();
+        store.insert(&sample(), 1).unwrap();
+        store.insert(&sample(), 2).unwrap();
+        assert_eq!(store.ids_with_command("docker ps").unwrap(), vec![1, 2]);
+        assert!(store.ids_with_command("nope").unwrap().is_empty());
     }
 }
