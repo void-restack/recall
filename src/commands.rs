@@ -3,11 +3,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 
 use crate::cli::{
-    AddArgs, DeleteArgs, EditArgs, GetArgs, ImportArgs, InitArgs, ListArgs, SearchArgs, Shell,
+    AddArgs, DeleteArgs, EditArgs, GetArgs, HistoryArgs, ImportArgs, InitArgs, ListArgs, SearchArgs,
+    Shell,
 };
 use crate::memory::{self, CommandMemory, ImportRecord, NewMemory};
 use crate::store::Store;
-use crate::{paths, shell};
+use crate::{history, paths, shell};
 
 pub fn add(args: AddArgs) -> Result<()> {
     use std::io::IsTerminal;
@@ -213,6 +214,29 @@ pub fn import(args: ImportArgs) -> Result<()> {
     let count = Store::open()?.import_all(&records, now_millis())?;
     eprintln!("imported {count} memories");
     Ok(())
+}
+
+pub fn history(args: HistoryArgs) -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        anyhow::bail!("not a terminal — the history picker needs an interactive shell");
+    }
+    let entries = history::recent(args.file, args.limit)?;
+    if entries.is_empty() {
+        eprintln!("no shell history found to promote");
+        return Ok(());
+    }
+    let Some(index) = crate::tui::history_picker(&entries)? else {
+        eprintln!("cancelled");
+        return Ok(());
+    };
+    let Some(form) = crate::tui::add_form(&entries[index], "", "")? else {
+        eprintln!("cancelled");
+        return Ok(());
+    };
+    warn_about_secrets(&form.command, false)?;
+    let tags = memory::normalize_tags(split_tags(&form.tags));
+    save_new(form.command, clean_description(Some(form.description)), tags)
 }
 
 pub fn edit(args: EditArgs) -> Result<()> {

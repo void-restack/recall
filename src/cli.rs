@@ -37,6 +37,9 @@ pub enum Command {
     /// Import Memories from a JSONL file (adds to the collection)
     Import(ImportArgs),
 
+    /// Browse shell history and promote a command into a Memory
+    History(HistoryArgs),
+
     /// Print shell integration that enables `recall add --last`
     Init(InitArgs),
 }
@@ -123,6 +126,17 @@ pub struct DeleteArgs {
 pub struct ImportArgs {
     /// Path to a JSONL file (as produced by `recall export`)
     pub file: std::path::PathBuf,
+}
+
+#[derive(Args)]
+pub struct HistoryArgs {
+    /// History file to read (defaults to $HISTFILE, then ~/.zsh_history / ~/.bash_history)
+    #[arg(long)]
+    pub file: Option<std::path::PathBuf>,
+
+    /// Maximum number of recent commands to show
+    #[arg(short, long, default_value_t = 1000)]
+    pub limit: usize,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

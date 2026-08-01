@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod history;
 mod memory;
 mod paths;
 mod search;
@@ -24,6 +25,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Delete(args)) => commands::delete(args),
         Some(Command::Export) => commands::export(),
         Some(Command::Import(args)) => commands::import(args),
+        Some(Command::History(args)) => commands::history(args),
         Some(Command::Init(args)) => commands::init(args),
         None => commands::pick(),
     }

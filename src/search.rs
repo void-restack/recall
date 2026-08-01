@@ -20,42 +20,56 @@ const STOPWORDS: &[&str] = &[
 /// returning matches best-first. The only place that touches the fuzzy backend
 /// (frizbee), so swapping matchers stays a one-file change.
 pub fn search<'a>(query: &str, memories: &'a [CommandMemory], limit: usize) -> Vec<&'a CommandMemory> {
-    let terms = query_terms(query);
-    if terms.is_empty() || memories.is_empty() {
+    if query.trim().is_empty() || memories.is_empty() {
         return Vec::new();
     }
 
     let haystacks: Vec<String> = memories.iter().map(haystack_for).collect();
+    let (matched, score) = coverage(query, &haystacks);
 
-    // Score each Memory by how many query terms it matches and how well. An
-    // OR/coverage ranking, so leftover filler in a sentence can't zero it out.
-    let mut matched = vec![0u32; memories.len()];
-    let mut score = vec![0u32; memories.len()];
-    for term in &terms {
-        // One typo per four characters, so `dokcer` still finds `docker`.
-        let config = Config::default().max_typos(Some((term.len() / 4) as u16));
-        let mut matcher = Matcher::new(term.as_str(), &config);
-        for m in matcher.match_list(&haystacks) {
-            let i = m.index as usize;
-            matched[i] += 1;
-            score[i] += u32::from(m.score);
-        }
-    }
-
-    // Relevance first (terms matched, then match quality); usage only breaks ties,
-    // so a command you reuse often — and more recently — wins between equal matches.
+    // Relevance first (terms matched, then match quality); Curated over Draft, then
+    // usage — so a command reused often, and more recently, wins between equal matches.
     let mut ranked: Vec<usize> = (0..memories.len()).filter(|&i| matched[i] > 0).collect();
     ranked.sort_by(|&a, &b| {
         matched[b]
             .cmp(&matched[a])
             .then(score[b].cmp(&score[a]))
-            // On an otherwise equal match, a Curated memory outranks a Draft.
             .then(memories[a].is_draft().cmp(&memories[b].is_draft()))
             .then(memories[b].use_count.cmp(&memories[a].use_count))
             .then(memories[b].last_used_at.cmp(&memories[a].last_used_at))
     });
     ranked.truncate(limit);
     ranked.into_iter().map(|i| &memories[i]).collect()
+}
+
+/// Rank plain lines (e.g. shell history) by the same fuzzy coverage, best first.
+pub fn rank_lines(query: &str, lines: &[String], limit: usize) -> Vec<usize> {
+    if query.trim().is_empty() {
+        return (0..lines.len()).take(limit).collect();
+    }
+    let (matched, score) = coverage(query, lines);
+    let mut ranked: Vec<usize> = (0..lines.len()).filter(|&i| matched[i] > 0).collect();
+    ranked.sort_by(|&a, &b| matched[b].cmp(&matched[a]).then(score[b].cmp(&score[a])));
+    ranked.truncate(limit);
+    ranked
+}
+
+/// For each haystack, count how many query terms matched and sum their scores.
+/// An OR/coverage measure, so leftover filler in a sentence can't zero a row out.
+fn coverage(query: &str, haystacks: &[String]) -> (Vec<u32>, Vec<u32>) {
+    let mut matched = vec![0u32; haystacks.len()];
+    let mut score = vec![0u32; haystacks.len()];
+    for term in query_terms(query) {
+        // One typo per four characters, so `dokcer` still finds `docker`.
+        let config = Config::default().max_typos(Some((term.len() / 4) as u16));
+        let mut matcher = Matcher::new(term.as_str(), &config);
+        for m in matcher.match_list(haystacks) {
+            let i = m.index as usize;
+            matched[i] += 1;
+            score[i] += u32::from(m.score);
+        }
+    }
+    (matched, score)
 }
 
 fn query_terms(query: &str) -> Vec<String> {

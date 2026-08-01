@@ -189,6 +189,84 @@ fn row_line(m: &CommandMemory) -> String {
     line
 }
 
+/// Browse shell history and pick a command to promote. Returns the chosen index,
+/// or `None` if cancelled.
+pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
+    let _guard = TerminalGuard::enter()?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+
+    let mut query = String::new();
+    let mut results: Vec<usize> = (0..entries.len()).collect();
+    let mut state = ListState::default();
+    state.select((!results.is_empty()).then_some(0));
+
+    loop {
+        terminal.draw(|f| render_history(f, &query, &results, entries, &mut state))?;
+
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => return Ok(None),
+            KeyCode::Char('c') if ctrl => return Ok(None),
+            KeyCode::Enter => return Ok(state.selected().and_then(|i| results.get(i).copied())),
+            KeyCode::Up => move_selection(&mut state, results.len(), -1),
+            KeyCode::Down => move_selection(&mut state, results.len(), 1),
+            KeyCode::Backspace => {
+                query.pop();
+                results = filter_history(&query, entries);
+                reselect(&mut state, results.len());
+            }
+            KeyCode::Char(c) if !ctrl => {
+                query.push(c);
+                results = filter_history(&query, entries);
+                reselect(&mut state, results.len());
+            }
+            _ => {}
+        }
+    }
+}
+
+fn filter_history(query: &str, entries: &[String]) -> Vec<usize> {
+    if query.trim().is_empty() {
+        return (0..entries.len()).collect();
+    }
+    search::rank_lines(query, entries, 500)
+}
+
+fn reselect(state: &mut ListState, len: usize) {
+    let selected = if len == 0 {
+        None
+    } else {
+        Some(state.selected().unwrap_or(0).min(len - 1))
+    };
+    state.select(selected);
+}
+
+fn render_history(f: &mut Frame, query: &str, results: &[usize], entries: &[String], state: &mut ListState) {
+    let [top, list, help] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+            .areas(f.area());
+    f.render_widget(
+        Paragraph::new(format!("history: {query}"))
+            .block(Block::bordered().title("promote a command into a memory")),
+        top,
+    );
+
+    let items: Vec<ListItem> = results.iter().map(|&i| ListItem::new(entries[i].as_str())).collect();
+    let widget = List::new(items)
+        .block(Block::bordered().title(format!("{} shown", results.len())))
+        .highlight_symbol("▌ ")
+        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+    f.render_stateful_widget(widget, list, state);
+
+    f.render_widget(Paragraph::new("↑/↓ move · enter annotate & save · esc cancel"), help);
+}
+
 /// What the add/edit form collected. Tags are raw text, split and normalized by the caller.
 pub struct AddForm {
     pub command: String,
