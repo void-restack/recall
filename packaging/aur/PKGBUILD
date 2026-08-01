@@ -1,0 +1,31 @@
+# Maintainer: void-restack <rahul@fetcch.xyz>
+pkgname=recall
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="A fast, local command memory for your terminal"
+arch=('x86_64' 'aarch64')
+url="https://github.com/void-restack/recall"
+license=('MIT')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/void-restack/recall/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP') # replace SKIP with the tarball checksum for a real release
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 "target/release/recall" "$pkgdir/usr/bin/recall"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+}

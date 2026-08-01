@@ -2,10 +2,16 @@
 name = "recall"
 version = "0.1.0"
 edition = "2024"
-description = "Local-first command memory for your terminal — save the commands you figure out once, find them by intent."
-repository = "https://github.com/void-restack/recall"
 rust-version = "1.89" # frizbee's MSRV
-# Not published yet: the final crate name and license are still open.
+description = "A fast, local command memory for your terminal — save the commands you work out once, then recall them by intent."
+repository = "https://github.com/void-restack/recall"
+homepage = "https://github.com/void-restack/recall"
+readme = "README.md"
+license = "MIT"
+keywords = ["cli", "tui", "shell", "productivity", "snippets"]
+categories = ["command-line-utilities"]
+# Distributed via GitHub Releases, Homebrew, Nix, and distro packages — not crates.io
+# (the `recall` id is already taken there).
 publish = false
 
 [dependencies]
@@ -18,3 +24,25 @@ serde_json = "1"
 frizbee = "0.12"
 ratatui = "0.30"
 regex = "1"
+
+[profile.release]
+strip = true
+lto = "thin"
+
+[package.metadata.deb]
+maintainer = "void-restack <rahul@fetcch.xyz>"
+section = "utils"
+priority = "optional"
+extended-description = "recall is a fast, local command memory for your terminal: save the commands you work out once, with a note on why they matter, then recall them by intent."
+assets = [
+    ["target/release/recall", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/recall/README.md", "644"],
+    ["LICENSE", "usr/share/doc/recall/LICENSE", "644"],
+]
+
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/recall", dest = "/usr/bin/recall", mode = "755" },
+    { source = "LICENSE", dest = "/usr/share/doc/recall/LICENSE", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/recall/README.md", mode = "644" },
+]
