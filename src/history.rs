@@ -9,7 +9,8 @@ pub fn recent(file: Option<PathBuf>, limit: usize) -> Result<Vec<String>> {
     let bytes = std::fs::read(&path)
         .with_context(|| format!("reading history {}", path.display()))?;
     // zsh stores bytes >= 0x80 metafied, and the file need not be valid UTF-8.
-    let text = String::from_utf8_lossy(&unmetafy(&bytes));
+    let decoded = unmetafy(&bytes);
+    let text = String::from_utf8_lossy(&decoded);
     Ok(extract(&text, limit))
 }
 
