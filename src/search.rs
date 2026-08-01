@@ -1,38 +1,62 @@
-use frizbee::{Config, Matcher, Pattern};
+use frizbee::{Config, Matcher};
 
 use crate::memory::CommandMemory;
+
+/// Everyday filler that describes *how you remember* a command rather than the
+/// command itself ("the command I ran yesterday that helped me..."). Dropped
+/// before matching. Deliberately excludes words that are also real commands or
+/// flags (run, find, get, list, show, all) — those stay searchable.
+const STOPWORDS: &[&str] = &[
+    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "by",
+    "from", "as", "i", "me", "my", "we", "us", "our", "you", "your", "it", "its", "that", "this",
+    "these", "those", "there", "then", "than", "so", "is", "am", "are", "was", "were", "be",
+    "been", "being", "do", "does", "did", "have", "has", "had", "can", "could", "will", "would",
+    "should", "may", "might", "must", "how", "what", "when", "where", "why", "who", "which",
+    "about", "just", "really", "actually", "yesterday", "today", "tomorrow", "ago", "day", "week",
+    "command", "thing", "ran", "helped", "want", "wanted", "need", "needed",
+];
 
 /// Fuzzy, typo-tolerant search over each Memory's command, description, and tags,
 /// returning matches best-first. The only place that touches the fuzzy backend
 /// (frizbee), so swapping matchers stays a one-file change.
 pub fn search<'a>(query: &str, memories: &'a [CommandMemory], limit: usize) -> Vec<&'a CommandMemory> {
-    let query = query.trim();
-    if query.is_empty() || memories.is_empty() {
-        return Vec::new();
-    }
-
-    // One typo per four query characters, so `dokcer` still finds `docker`.
-    let patterns: Vec<Pattern> = Pattern::parse_query(query)
-        .into_iter()
-        .map(|p| {
-            let max_typos = (p.needle.len() / 4) as u16;
-            p.max_typos(Some(max_typos))
-        })
-        .collect();
-    if patterns.is_empty() {
+    let terms = query_terms(query);
+    if terms.is_empty() || memories.is_empty() {
         return Vec::new();
     }
 
     let haystacks: Vec<String> = memories.iter().map(haystack_for).collect();
-    let mut matcher = Matcher::from_patterns(&patterns, &Config::default());
 
-    let mut hits: Vec<&CommandMemory> = matcher
-        .match_list(&haystacks)
-        .into_iter()
-        .map(|m| &memories[m.index as usize])
+    // Score each Memory by how many query terms it matches and how well. An
+    // OR/coverage ranking, so leftover filler in a sentence can't zero it out.
+    let mut matched = vec![0u32; memories.len()];
+    let mut score = vec![0u32; memories.len()];
+    for term in &terms {
+        // One typo per four characters, so `dokcer` still finds `docker`.
+        let config = Config::default().max_typos(Some((term.len() / 4) as u16));
+        let mut matcher = Matcher::new(term.as_str(), &config);
+        for m in matcher.match_list(&haystacks) {
+            let i = m.index as usize;
+            matched[i] += 1;
+            score[i] += u32::from(m.score);
+        }
+    }
+
+    let mut ranked: Vec<usize> = (0..memories.len()).filter(|&i| matched[i] > 0).collect();
+    ranked.sort_by(|&a, &b| matched[b].cmp(&matched[a]).then(score[b].cmp(&score[a])));
+    ranked.truncate(limit);
+    ranked.into_iter().map(|i| &memories[i]).collect()
+}
+
+fn query_terms(query: &str) -> Vec<String> {
+    let raw: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let kept: Vec<String> = raw
+        .iter()
+        .filter(|w| w.len() > 1 && !STOPWORDS.contains(&w.as_str()))
+        .cloned()
         .collect();
-    hits.truncate(limit);
-    hits
+    // If the query was nothing but filler, fall back to whatever was typed.
+    if kept.is_empty() { raw } else { kept }
 }
 
 fn haystack_for(m: &CommandMemory) -> String {
@@ -66,17 +90,32 @@ mod tests {
 
     fn corpus() -> Vec<CommandMemory> {
         vec![
-            mem(1, "docker system prune -af --volumes", Some("reclaim docker disk space"), &["docker", "cleanup"]),
-            mem(2, "git reflog --date=iso", Some("recover a lost commit"), &["git"]),
-            mem(3, "kubectl get pods --field-selector=status.phase=Failed", Some("find failing pods"), &["kubernetes"]),
+            mem(1, "docker ps", Some("list running (active) docker containers"), &["docker", "containers"]),
+            mem(2, "docker ps -a", Some("list all docker containers including stopped"), &["docker", "containers"]),
+            mem(3, "git reflog --date=iso", Some("recover a lost commit"), &["git"]),
         ]
+    }
+
+    #[test]
+    fn a_full_sentence_surfaces_the_right_commands() {
+        let c = corpus();
+        let hits = search(
+            "i ran a command yesterday that helped me get all my docker container that were active",
+            &c,
+            10,
+        );
+        // The sentence names both "all" and "active", so both docker commands are
+        // relevant and should top the results; the unrelated git entry should not.
+        let top: Vec<i64> = hits.iter().take(2).map(|m| m.id).collect();
+        assert!(top.contains(&1) && top.contains(&2), "expected docker commands on top, got {top:?}");
     }
 
     #[test]
     fn finds_by_purpose_words_not_in_the_command() {
         let c = corpus();
-        let hits = search("docker disk cleanup", &c, 10);
-        assert_eq!(hits.first().map(|m| m.id), Some(1));
+        let hits = search("docker containers", &c, 10);
+        assert!(hits.iter().any(|m| m.id == 1));
+        assert!(hits.iter().any(|m| m.id == 2));
     }
 
     #[test]
