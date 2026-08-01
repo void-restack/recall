@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod memory;
 mod paths;
+mod search;
 mod store;
 
 use clap::Parser;
@@ -13,5 +14,6 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Command::Add(args) => commands::add(args),
         Command::List => commands::list(),
+        Command::Search(args) => commands::search(args),
     }
 }

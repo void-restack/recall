@@ -2,8 +2,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::cli::AddArgs;
-use crate::memory::{self, NewMemory};
+use crate::cli::{AddArgs, SearchArgs};
+use crate::memory::{self, CommandMemory, NewMemory};
 use crate::store::Store;
 
 pub fn add(args: AddArgs) -> Result<()> {
@@ -30,20 +30,39 @@ pub fn list() -> Result<()> {
         return Ok(());
     }
     for m in &memories {
-        let label = m
-            .description
-            .as_deref()
-            .filter(|d| !d.is_empty())
-            .unwrap_or(&m.command);
-        let draft = if m.is_draft() { " *" } else { "" };
-        let tags = if m.tags.is_empty() {
-            String::new()
-        } else {
-            format!("  [{}]", m.tags.join(", "))
-        };
-        println!("{:>4}{draft}  {label}{tags}", m.id);
+        print_row(m);
     }
     Ok(())
+}
+
+pub fn search(args: SearchArgs) -> Result<()> {
+    let query = args.query.join(" ");
+    let store = Store::open()?;
+    let memories = store.list()?;
+    let hits = crate::search::search(&query, &memories, args.limit);
+    if hits.is_empty() {
+        eprintln!("no matches for `{query}`");
+        return Ok(());
+    }
+    for m in hits {
+        print_row(m);
+    }
+    Ok(())
+}
+
+fn print_row(m: &CommandMemory) {
+    let label = m
+        .description
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .unwrap_or(&m.command);
+    let draft = if m.is_draft() { " *" } else { "" };
+    let tags = if m.tags.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", m.tags.join(", "))
+    };
+    println!("{:>4}{draft}  {label}{tags}", m.id);
 }
 
 fn clean_description(raw: Option<String>) -> Option<String> {

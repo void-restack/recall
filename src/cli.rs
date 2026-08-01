@@ -13,6 +13,9 @@ pub enum Command {
     Add(AddArgs),
     /// List saved Memories, newest first
     List,
+
+    /// Search Memories by fuzzy, typo-tolerant matching
+    Search(SearchArgs),
 }
 
 #[derive(Args)]
@@ -27,4 +30,15 @@ pub struct AddArgs {
     /// Tag to attach; repeat for several (e.g. -t docker -t cleanup)
     #[arg(short, long = "tag")]
     pub tag: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct SearchArgs {
+    /// Words to match across command, description, and tags
+    #[arg(required = true)]
+    pub query: Vec<String>,
+
+    /// Maximum number of results to show
+    #[arg(short, long, default_value_t = 20)]
+    pub limit: usize,
 }
