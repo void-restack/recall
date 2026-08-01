@@ -1,4 +1,4 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "recall", version, about = "Local-first command memory for your terminal")]
@@ -28,12 +28,19 @@ pub enum Command {
 
     /// Export all Memories as JSONL
     Export,
+
+    /// Print shell integration that enables `recall add --last`
+    Init(InitArgs),
 }
 
 #[derive(Args)]
 pub struct AddArgs {
-    /// The command to remember
-    pub command: String,
+    /// The command to remember (omit when using --last)
+    pub command: Option<String>,
+
+    /// Capture the previous command from your shell (requires `recall init`)
+    #[arg(long)]
+    pub last: bool,
 
     /// Short description of what it is for. Omit to save a Draft and annotate later.
     #[arg(short, long)]
@@ -91,4 +98,17 @@ pub struct DeleteArgs {
     /// Skip the confirmation prompt
     #[arg(short = 'y', long)]
     pub yes: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum Shell {
+    Bash,
+    Zsh,
+}
+
+#[derive(Args)]
+pub struct InitArgs {
+    /// Which shell to generate integration for
+    #[arg(value_enum)]
+    pub shell: Shell,
 }

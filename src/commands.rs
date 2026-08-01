@@ -2,14 +2,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow};
 
-use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, SearchArgs};
+use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, InitArgs, SearchArgs, Shell};
 use crate::memory::{self, CommandMemory, NewMemory};
 use crate::store::Store;
+use crate::{paths, shell};
 
 pub fn add(args: AddArgs) -> Result<()> {
+    let command = resolve_command(args.command, args.last)?;
     let store = Store::open()?;
     let new = NewMemory {
-        command: args.command,
+        command,
         description: clean_description(args.description),
         tags: memory::normalize_tags(args.tag),
     };
@@ -19,6 +21,37 @@ pub fn add(args: AddArgs) -> Result<()> {
     println!("{}", saved.id);
     let kind = if saved.is_draft() { "draft " } else { "" };
     eprintln!("saved {kind}#{}", saved.id);
+    Ok(())
+}
+
+fn resolve_command(command: Option<String>, last: bool) -> Result<String> {
+    match (command, last) {
+        (Some(_), true) => anyhow::bail!("pass a command or --last, not both"),
+        (Some(c), false) => Ok(c),
+        (None, true) => read_last_command(),
+        (None, false) => anyhow::bail!("provide a command, or --last to capture the previous one"),
+    }
+}
+
+fn read_last_command() -> Result<String> {
+    let path = paths::last_command_path()?;
+    let captured = std::fs::read_to_string(&path).unwrap_or_default();
+    let command = captured.trim();
+    if command.is_empty() {
+        anyhow::bail!(
+            "no recent command captured — install the shell hook first:\n  eval \"$(recall init zsh)\"   # or bash"
+        );
+    }
+    Ok(command.to_string())
+}
+
+pub fn init(args: InitArgs) -> Result<()> {
+    let last_file = paths::last_command_path()?;
+    let script = match args.shell {
+        Shell::Zsh => shell::zsh(&last_file),
+        Shell::Bash => shell::bash(&last_file),
+    };
+    print!("{script}");
     Ok(())
 }
 

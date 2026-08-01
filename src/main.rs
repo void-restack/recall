@@ -3,6 +3,7 @@ mod commands;
 mod memory;
 mod paths;
 mod search;
+mod shell;
 mod store;
 
 use clap::Parser;
@@ -19,5 +20,6 @@ fn main() -> anyhow::Result<()> {
         Command::Edit(args) => commands::edit(args),
         Command::Delete(args) => commands::delete(args),
         Command::Export => commands::export(),
+        Command::Init(args) => commands::init(args),
     }
 }
