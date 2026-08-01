@@ -131,7 +131,7 @@ pub fn pick() -> Result<()> {
         return Ok(());
     }
     let backend = PickerBackend { store: &store };
-    if let Some(chosen) = crate::tui::run(&backend, memories)? {
+    if let Some(chosen) = crate::tui::run(&backend, memories, now_millis())? {
         store.record_use(chosen.id, now_millis())?;
         println!("{}", chosen.command);
     }

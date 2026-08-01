@@ -151,6 +151,42 @@ pub fn rank_lines(query: &str, lines: &[String], limit: usize) -> Vec<usize> {
     ranked
 }
 
+/// Char positions in `text` matched by the query's terms, for highlighting a row.
+/// Uses the same terms and typo tolerance as ranking, so highlights track hits.
+pub fn match_positions(query: &str, text: &str) -> Vec<usize> {
+    let mut positions = std::collections::HashSet::new();
+    let haystack = [text];
+    for term in query_terms(query) {
+        let config = Config::default().max_typos(Some((term.len() / 4) as u16));
+        let mut matcher = Matcher::new(term.as_str(), &config);
+        for m in matcher.match_list_indices(&haystack) {
+            // frizbee reports char indices (in reverse); a set makes order moot.
+            positions.extend(m.indices.into_iter().map(|i| i as usize));
+        }
+    }
+    let mut out: Vec<usize> = positions.into_iter().collect();
+    out.sort_unstable();
+    out
+}
+
+/// The query terms that matched `haystack`, and the filler dropped before matching —
+/// for the picker's "why this matched" transparency line.
+pub fn explain_match(query: &str, haystack: &str) -> (Vec<String>, Vec<String>) {
+    let raw: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    let kept = query_terms(query);
+    let dropped: Vec<String> = raw.into_iter().filter(|w| !kept.contains(w)).collect();
+    let text = [haystack];
+    let matched: Vec<String> = kept
+        .into_iter()
+        .filter(|term| {
+            let config = Config::default().max_typos(Some((term.len() / 4) as u16));
+            let mut matcher = Matcher::new(term.as_str(), &config);
+            !matcher.match_list(&text).is_empty()
+        })
+        .collect();
+    (matched, dropped)
+}
+
 /// For each haystack, count how many query terms matched and sum their scores.
 /// An OR/coverage measure, so leftover filler in a sentence can't zero a row out.
 fn coverage(query: &str, haystacks: &[String]) -> (Vec<u32>, Vec<u32>) {
@@ -269,6 +305,23 @@ mod tests {
     fn no_matches_returns_empty() {
         let c = corpus();
         assert!(search("zzzznomatch", &c, 10).is_empty());
+    }
+
+    #[test]
+    fn match_positions_are_sorted_and_in_bounds() {
+        let pos = match_positions("dkr", "docker");
+        assert!(!pos.is_empty());
+        assert!(pos.iter().all(|&i| i < "docker".chars().count()));
+        assert!(pos.windows(2).all(|w| w[0] < w[1]));
+    }
+
+    #[test]
+    fn explain_match_splits_matched_from_dropped_filler() {
+        let (matched, dropped) =
+            explain_match("the docker containers", "docker ps active containers");
+        assert!(matched.contains(&"docker".to_string()));
+        assert!(matched.contains(&"containers".to_string()));
+        assert!(dropped.contains(&"the".to_string()));
     }
 
     #[test]

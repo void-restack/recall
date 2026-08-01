@@ -9,13 +9,15 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::line_editor::{Handled, LineEditor};
 use crate::memory::CommandMemory;
 use crate::search;
+use crate::theme::Theme;
 
 type Term = Terminal<CrosstermBackend<io::Stderr>>;
 
@@ -44,10 +46,15 @@ enum Flow {
 
 /// Run the picker over one persistent viewport. Draws on stderr so stdout stays
 /// clean for the selected command; returns the chosen memory, or `None` on cancel.
-pub fn run(store: &dyn PickerStore, memories: Vec<CommandMemory>) -> Result<Option<CommandMemory>> {
+/// `now` stamps relative times in the preview without the TUI reading the clock.
+pub fn run(
+    store: &dyn PickerStore,
+    memories: Vec<CommandMemory>,
+    now: i64,
+) -> Result<Option<CommandMemory>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(18)?;
-    let mut app = App::new(memories);
+    let mut app = App::new(memories, now);
 
     let outcome = 'outer: loop {
         terminal.draw(|f| app.render(f))?;
@@ -79,10 +86,12 @@ struct App {
     state: ListState,
     mode: Mode,
     dirty: bool,
+    theme: Theme,
+    now: i64,
 }
 
 impl App {
-    fn new(memories: Vec<CommandMemory>) -> Self {
+    fn new(memories: Vec<CommandMemory>, now: i64) -> Self {
         let haystacks = search::build_haystacks(&memories);
         let results: Vec<usize> = (0..memories.len()).collect();
         let mut state = ListState::default();
@@ -95,6 +104,8 @@ impl App {
             state,
             mode: Mode::Picker,
             dirty: false,
+            theme: Theme::detect(),
+            now,
         }
     }
 
@@ -107,7 +118,7 @@ impl App {
 
     fn render(&mut self, f: &mut Frame) {
         if let Mode::Editing { form, .. } = &self.mode {
-            render_form(f, form);
+            render_form(f, form, &self.theme);
             return;
         }
         let confirming = matches!(self.mode, Mode::ConfirmDelete);
@@ -118,6 +129,8 @@ impl App {
             &self.memories,
             &mut self.state,
             confirming,
+            &self.theme,
+            self.now,
         );
     }
 
@@ -309,6 +322,7 @@ fn set_line_cursor(f: &mut Frame, area: Rect, col: usize) {
     f.set_cursor_position(Position { x, y: inner.y });
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_picker(
     f: &mut Frame,
     query: &LineEditor,
@@ -316,6 +330,8 @@ fn render_picker(
     memories: &[CommandMemory],
     state: &mut ListState,
     confirming: bool,
+    theme: &Theme,
+    now: i64,
 ) {
     let [top, middle, help] = Layout::vertical([
         Constraint::Length(3),
@@ -326,7 +342,7 @@ fn render_picker(
     let prompt = "search: ";
     f.render_widget(
         Paragraph::new(format!("{prompt}{}", query.text()))
-            .block(Block::bordered().title("recall")),
+            .block(Block::bordered().title("recall").border_style(theme.accent)),
         top,
     );
     set_line_cursor(f, top, prompt.chars().count() + query.cursor_col());
@@ -334,7 +350,14 @@ fn render_picker(
     let [list_area, preview_area] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
 
-    let preview = preview_text(results, memories, state.selected());
+    let preview = preview_text(
+        results,
+        memories,
+        state.selected(),
+        query.text(),
+        theme,
+        now,
+    );
     f.render_widget(
         Paragraph::new(preview)
             .block(Block::bordered().title("details"))
@@ -344,7 +367,7 @@ fn render_picker(
 
     let items: Vec<ListItem> = results
         .iter()
-        .map(|&i| ListItem::new(row_line(&memories[i])))
+        .map(|&i| ListItem::new(row_line(&memories[i], query.text(), theme)))
         .collect();
     let title = format!(
         "{} match{}",
@@ -354,47 +377,154 @@ fn render_picker(
     let list = List::new(items)
         .block(Block::bordered().title(title))
         .highlight_symbol("▌ ")
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+        .highlight_style(theme.selection);
     f.render_stateful_widget(list, list_area, state);
 
-    let help_text = if confirming {
-        "delete this memory?  y / n"
+    let help_line = if confirming {
+        Line::styled("delete this memory?  y / n", theme.danger)
     } else {
-        "↑/↓ move · enter print · ^o edit · ^x delete · esc cancel"
+        Line::styled(
+            "↑/↓ move · enter print · ^o edit · ^x delete · esc cancel",
+            theme.dim,
+        )
     };
-    f.render_widget(Paragraph::new(help_text), help);
+    f.render_widget(Paragraph::new(help_line), help);
 }
 
-fn preview_text(results: &[usize], memories: &[CommandMemory], selected: Option<usize>) -> String {
+fn preview_text<'a>(
+    results: &[usize],
+    memories: &'a [CommandMemory],
+    selected: Option<usize>,
+    query: &str,
+    theme: &Theme,
+    now: i64,
+) -> Text<'a> {
     let Some(m) = selected.and_then(|s| results.get(s)).map(|&i| &memories[i]) else {
-        return String::new();
+        return Text::default();
     };
-    let mut out = format!("{}\n\n", m.command);
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Command with its first token (the program) bold.
+    lines.push(program_first(&m.command, theme));
+    lines.push(Line::default());
+
     match m.description.as_deref().filter(|d| !d.is_empty()) {
-        Some(desc) => out.push_str(&format!("{desc}\n\n")),
-        None => out.push_str("(no description yet — press ^o to add one)\n\n"),
+        Some(desc) => lines.push(Line::raw(desc.to_string())),
+        None => lines.push(Line::styled(
+            "(no description yet — press ^o to add one)",
+            theme.dim,
+        )),
     }
+    lines.push(Line::default());
+
     if !m.tags.is_empty() {
-        out.push_str(&format!("tags: {}\n", m.tags.join(", ")));
+        lines.push(Line::styled(
+            format!("tags: {}", m.tags.join(", ")),
+            theme.tag,
+        ));
     }
-    out.push_str(&format!(
-        "used {} time{}",
-        m.use_count,
-        if m.use_count == 1 { "" } else { "s" }
-    ));
-    out
+
+    let usage = if m.use_count == 0 {
+        "not used yet".to_string()
+    } else {
+        let mut s = format!("used {}×", m.use_count);
+        if let Some(last) = m.last_used_at {
+            s.push_str(&format!(" · last used {}", humanize_ago(now, last)));
+        }
+        s
+    };
+    lines.push(Line::styled(usage, theme.dim));
+
+    // Why this row matched: the terms that hit, and the filler dropped.
+    if !query.trim().is_empty() {
+        let haystack = search::build_haystacks(std::slice::from_ref(m));
+        let (matched, dropped) = search::explain_match(query, &haystack[0]);
+        if !matched.is_empty() {
+            let mut s = format!("matched: {}", matched.join(", "));
+            if !dropped.is_empty() {
+                s.push_str(&format!(" (dropped: {})", dropped.join(", ")));
+            }
+            lines.push(Line::styled(s, theme.dim));
+        }
+    }
+
+    Text::from(lines)
 }
 
-fn row_line(m: &CommandMemory) -> String {
-    let mut line = m.command.clone();
+/// The command as a line, with the program (first whitespace token) in bold.
+fn program_first(command: &str, theme: &Theme) -> Line<'static> {
+    match command.split_once(char::is_whitespace) {
+        Some((head, rest)) => Line::from(vec![
+            Span::styled(head.to_string(), theme.strong),
+            Span::raw(format!(" {rest}")),
+        ]),
+        None => Line::from(Span::styled(command.to_string(), theme.strong)),
+    }
+}
+
+fn row_line(m: &CommandMemory, query: &str, theme: &Theme) -> Line<'static> {
+    let mut spans = command_spans(&m.command, query, theme);
     if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
-        line.push_str("  — ");
-        line.push_str(desc);
+        spans.push(Span::styled(format!("  — {desc}"), theme.dim));
     }
     if !m.tags.is_empty() {
-        line.push_str(&format!("  [{}]", m.tags.join(", ")));
+        spans.push(Span::styled(
+            format!("  [{}]", m.tags.join(", ")),
+            theme.tag,
+        ));
     }
-    line
+    Line::from(spans)
+}
+
+/// Split a command into spans, styling the query-matched characters. Highlighting
+/// runs only for the ≤200 ranked rows (empty queries skip it entirely).
+fn command_spans(command: &str, query: &str, theme: &Theme) -> Vec<Span<'static>> {
+    if query.trim().is_empty() {
+        return vec![Span::raw(command.to_string())];
+    }
+    let matched: std::collections::HashSet<usize> = search::match_positions(query, command)
+        .into_iter()
+        .collect();
+    if matched.is_empty() {
+        return vec![Span::raw(command.to_string())];
+    }
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_hl = false;
+    for (i, ch) in command.chars().enumerate() {
+        let hl = matched.contains(&i);
+        if hl != run_hl && !run.is_empty() {
+            spans.push(styled_run(std::mem::take(&mut run), run_hl, theme));
+        }
+        run_hl = hl;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        spans.push(styled_run(run, run_hl, theme));
+    }
+    spans
+}
+
+fn styled_run(text: String, highlighted: bool, theme: &Theme) -> Span<'static> {
+    if highlighted {
+        Span::styled(text, theme.matched)
+    } else {
+        Span::raw(text)
+    }
+}
+
+/// Compact relative time like `2d ago`, from millisecond timestamps.
+fn humanize_ago(now: i64, then: i64) -> String {
+    let secs = (now - then).max(0) / 1000;
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else if secs < 3600 {
+        format!("{}m ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h ago", secs / 3600)
+    } else {
+        format!("{}d ago", secs / 86_400)
+    }
 }
 
 /// Browse shell history and pick a command to promote. Returns the chosen index,
@@ -403,13 +533,14 @@ pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(18)?;
 
+    let theme = Theme::detect();
     let mut query = LineEditor::default();
     let mut results: Vec<usize> = (0..entries.len()).collect();
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
 
     let result = loop {
-        terminal.draw(|f| render_history(f, &query, &results, entries, &mut state))?;
+        terminal.draw(|f| render_history(f, &query, &results, entries, &mut state, &theme))?;
 
         match event::read()? {
             Event::Paste(text) => {
@@ -454,6 +585,7 @@ fn render_history(
     results: &[usize],
     entries: &[String],
     state: &mut ListState,
+    theme: &Theme,
 ) {
     let [top, list, help] = Layout::vertical([
         Constraint::Length(3),
@@ -463,24 +595,36 @@ fn render_history(
     .areas(f.area());
     let prompt = "history: ";
     f.render_widget(
-        Paragraph::new(format!("{prompt}{}", query.text()))
-            .block(Block::bordered().title("promote a command into a memory")),
+        Paragraph::new(format!("{prompt}{}", query.text())).block(
+            Block::bordered()
+                .title("promote a command into a memory")
+                .border_style(theme.accent),
+        ),
         top,
     );
     set_line_cursor(f, top, prompt.chars().count() + query.cursor_col());
 
     let items: Vec<ListItem> = results
         .iter()
-        .map(|&i| ListItem::new(entries[i].as_str()))
+        .map(|&i| {
+            ListItem::new(Line::from(command_spans(
+                entries[i].as_str(),
+                query.text(),
+                theme,
+            )))
+        })
         .collect();
     let widget = List::new(items)
         .block(Block::bordered().title(format!("{} shown", results.len())))
         .highlight_symbol("▌ ")
-        .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
+        .highlight_style(theme.selection);
     f.render_stateful_widget(widget, list, state);
 
     f.render_widget(
-        Paragraph::new("↑/↓ move · enter annotate & save · esc cancel"),
+        Paragraph::new(Line::styled(
+            "↑/↓ move · enter annotate & save · esc cancel",
+            theme.dim,
+        )),
         help,
     );
 }
@@ -497,10 +641,11 @@ pub struct AddForm {
 pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<AddForm>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(14)?;
+    let theme = Theme::detect();
     let mut form = FormState::new(command, description, tags);
 
     let result = loop {
-        terminal.draw(|f| render_form(f, &form))?;
+        terminal.draw(|f| render_form(f, &form, &theme))?;
 
         match event::read()? {
             Event::Paste(text) => form.field().insert_str(&text),
@@ -571,7 +716,7 @@ impl FormState {
     }
 }
 
-fn render_form(f: &mut Frame, form: &FormState) {
+fn render_form(f: &mut Frame, form: &FormState, theme: &Theme) {
     let [command, description, tags, help] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(3),
@@ -581,7 +726,7 @@ fn render_form(f: &mut Frame, form: &FormState) {
     .areas(f.area());
 
     f.render_widget(
-        field(form.command.text(), "command", form.focus == 0),
+        field(form.command.text(), "command", form.focus == 0, theme),
         command,
     );
     f.render_widget(
@@ -589,6 +734,7 @@ fn render_form(f: &mut Frame, form: &FormState) {
             form.description.text(),
             "why (description)",
             form.focus == 1,
+            theme,
         ),
         description,
     );
@@ -597,6 +743,7 @@ fn render_form(f: &mut Frame, form: &FormState) {
             form.tags.text(),
             "tags (space or comma separated)",
             form.focus == 2,
+            theme,
         ),
         tags,
     );
@@ -608,15 +755,17 @@ fn render_form(f: &mut Frame, form: &FormState) {
     };
     set_line_cursor(f, focused_area, focused.cursor_col());
 
-    f.render_widget(Paragraph::new("tab move · enter save · esc cancel"), help);
+    f.render_widget(
+        Paragraph::new(Line::styled(
+            "tab move · enter save · esc cancel",
+            theme.dim,
+        )),
+        help,
+    );
 }
 
-fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
-    let border = if focused {
-        Style::new().add_modifier(Modifier::BOLD)
-    } else {
-        Style::new()
-    };
+fn field<'a>(value: &'a str, label: &'a str, focused: bool, theme: &Theme) -> Paragraph<'a> {
+    let border = if focused { theme.accent } else { Style::new() };
     Paragraph::new(value).block(Block::bordered().title(label).border_style(border))
 }
 
@@ -681,6 +830,20 @@ mod tests {
         ))
     }
 
+    /// Flatten styled Text back to a plain string for content assertions.
+    fn flatten(text: &Text) -> String {
+        text.lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// In-memory PickerStore for exercising the App state machine.
     struct MockStore {
         memories: std::cell::RefCell<Vec<CommandMemory>>,
@@ -709,7 +872,7 @@ mod tests {
             mem(1, "docker ps", Some("containers"), &["docker"]),
             mem(2, "git status", Some("changes"), &["git"]),
         ];
-        let mut app = App::new(memories);
+        let mut app = App::new(memories, 0);
         for c in "git".chars() {
             app.handle_picker(key(KeyCode::Char(c))).unwrap();
         }
@@ -726,7 +889,7 @@ mod tests {
         let store = MockStore {
             memories: std::cell::RefCell::new(memories.clone()),
         };
-        let mut app = App::new(memories);
+        let mut app = App::new(memories, 0);
         app.state.select(Some(1));
         app.begin_edit();
         app.handle_event(key(KeyCode::Enter), &store).unwrap();
@@ -744,7 +907,7 @@ mod tests {
         let store = MockStore {
             memories: std::cell::RefCell::new(memories.clone()),
         };
-        let mut app = App::new(memories);
+        let mut app = App::new(memories, 0);
         app.state.select(Some(1));
         app.mode = Mode::ConfirmDelete;
         app.handle_event(key(KeyCode::Char('y')), &store).unwrap();
@@ -792,10 +955,11 @@ mod tests {
             Some("list running containers"),
             &["docker"],
         )];
-        let text = preview_text(&[0], &memories, Some(0));
+        let preview = preview_text(&[0], &memories, Some(0), "", &Theme::detect(), 0);
+        let text = flatten(&preview);
         assert!(text.contains("docker ps"));
         assert!(text.contains("list running containers"));
-        assert!(text.contains("used 0 times"));
+        assert!(text.contains("not used yet"));
     }
 
     #[test]
@@ -811,9 +975,10 @@ mod tests {
         state.select(Some(0));
 
         let query = LineEditor::new("docker");
+        let theme = Theme::detect();
         let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
         terminal
-            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false))
+            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false, &theme, 0))
             .unwrap();
 
         let text: String = terminal
@@ -845,8 +1010,9 @@ mod tests {
     #[test]
     fn form_prefills_all_fields() {
         let s = FormState::new("docker ps", "list containers", "docker cleanup");
+        let theme = Theme::detect();
         let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
-        terminal.draw(|f| render_form(f, &s)).unwrap();
+        terminal.draw(|f| render_form(f, &s, &theme)).unwrap();
         let text: String = terminal
             .backend()
             .buffer()

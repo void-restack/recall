@@ -8,6 +8,7 @@ mod search;
 mod secrets;
 mod shell;
 mod store;
+mod theme;
 mod tui;
 
 use clap::Parser;
