@@ -4,7 +4,8 @@ use std::time::Duration;
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
@@ -97,6 +98,8 @@ struct App {
     deleted: Vec<i64>,
     /// A transient footer message (e.g. the undo hint), cleared on the next key.
     status: Option<String>,
+    /// Distinct tags across the collection, offered as form autocompletions.
+    all_tags: Vec<String>,
     theme: Theme,
     now: i64,
 }
@@ -104,6 +107,7 @@ struct App {
 impl App {
     fn new(memories: Vec<CommandMemory>, now: i64) -> Self {
         let haystacks = search::build_haystacks(&memories);
+        let all_tags = crate::memory::collect_tags(&memories);
         let mut app = Self {
             memories,
             haystacks,
@@ -115,6 +119,7 @@ impl App {
             drafts_only: false,
             deleted: Vec::new(),
             status: None,
+            all_tags,
             theme: Theme::detect(),
             now,
         };
@@ -239,7 +244,7 @@ impl App {
                     }
                     _ => {
                         if let Mode::Editing { form, .. } = &mut self.mode {
-                            form.field().handle_key(key);
+                            form.handle_field_key(key);
                         }
                     }
                 }
@@ -285,6 +290,7 @@ impl App {
                 &m.command,
                 m.description.as_deref().unwrap_or(""),
                 &m.tags.join(" "),
+                self.all_tags.clone(),
             );
             self.mode = Mode::Editing { form, id: m.id };
         }
@@ -321,6 +327,7 @@ impl App {
     fn reload(&mut self, store: &dyn PickerStore) -> Result<()> {
         self.memories = store.reload()?;
         self.haystacks = search::build_haystacks(&self.memories);
+        self.all_tags = crate::memory::collect_tags(&self.memories);
         self.recompute_results();
         Ok(())
     }
@@ -418,8 +425,17 @@ fn render_picker(
     .areas(area);
 
     let prompt = "search: ";
+    let search_line = if query.text().is_empty() {
+        // Empty-query placeholder: teach what the box does and how the list is ordered.
+        Line::from(vec![
+            Span::raw(prompt),
+            Span::styled("type to search · browsing by recent use", theme.dim),
+        ])
+    } else {
+        Line::raw(format!("{prompt}{}", query.text()))
+    };
     f.render_widget(
-        Paragraph::new(format!("{prompt}{}", query.text()))
+        Paragraph::new(search_line)
             .block(Block::bordered().title("recall").border_style(theme.accent)),
         top,
     );
@@ -555,6 +571,24 @@ fn render_list(
         .highlight_symbol("▌ ")
         .highlight_style(highlight);
     f.render_stateful_widget(list, area, state);
+
+    // Teach when there's nothing to show.
+    if results.is_empty() {
+        let hint = if !query.trim().is_empty() {
+            format!(
+                "no matches for \"{}\" — try fewer or different words",
+                truncate_str(query.trim(), 30)
+            )
+        } else if drafts_only {
+            "no drafts — every memory has a why".to_string()
+        } else {
+            "nothing here — capture a command with `recall add`".to_string()
+        };
+        f.render_widget(
+            Paragraph::new(Line::styled(hint, theme.dim)).wrap(Wrap { trim: true }),
+            Block::bordered().inner(area),
+        );
+    }
 }
 
 /// The medium-width stand-in for the preview pane: the command, then its why (or
@@ -916,13 +950,18 @@ pub struct AddForm {
     pub tags: String,
 }
 
-/// Interactive capture/edit form, pre-filled with the given values. Returns `None`
-/// if cancelled. Draws in an inline viewport on stderr, like the picker.
-pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<AddForm>> {
+/// Interactive capture/edit form, pre-filled with the given values. `tag_pool` seeds
+/// tag autocompletion. Returns `None` if cancelled. Draws in an inline viewport.
+pub fn add_form(
+    command: &str,
+    description: &str,
+    tags: &str,
+    tag_pool: &[String],
+) -> Result<Option<AddForm>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(14)?;
     let theme = Theme::detect();
-    let mut form = FormState::new(command, description, tags);
+    let mut form = FormState::new(command, description, tags, tag_pool.to_vec());
 
     let result = loop {
         terminal.draw(|f| render_form(f, &form, &theme))?;
@@ -939,9 +978,7 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
                     KeyCode::Enter if !form.command_is_blank() => break Some(form.into_add_form()),
                     KeyCode::Tab | KeyCode::Down => form.next(),
                     KeyCode::BackTab | KeyCode::Up => form.prev(),
-                    _ => {
-                        form.field().handle_key(key);
-                    }
+                    _ => form.handle_field_key(key),
                 }
             }
             _ => {}
@@ -952,20 +989,28 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
     Ok(result)
 }
 
+const TAGS_FIELD: usize = 2;
+
 struct FormState {
     command: LineEditor,
     description: LineEditor,
     tags: LineEditor,
     focus: usize,
+    /// Existing tags, offered as ghost completions in the tags field.
+    tag_pool: Vec<String>,
+    /// Which matching tag the ghost is currently showing (cycled with Ctrl-N/P).
+    tag_pick: usize,
 }
 
 impl FormState {
-    fn new(command: &str, description: &str, tags: &str) -> Self {
+    fn new(command: &str, description: &str, tags: &str, tag_pool: Vec<String>) -> Self {
         Self {
             command: LineEditor::new(command),
             description: LineEditor::new(description),
             tags: LineEditor::new(tags),
             focus: 0,
+            tag_pool,
+            tag_pick: 0,
         }
     }
 
@@ -983,6 +1028,84 @@ impl FormState {
 
     fn prev(&mut self) {
         self.focus = (self.focus + 2) % 3;
+    }
+
+    /// The tag token currently being typed — the text after the last separator.
+    fn tag_token(&self) -> &str {
+        self.tags.text().rsplit([',', ' ']).next().unwrap_or("")
+    }
+
+    /// Pool tags that extend the current token and aren't already present.
+    fn tag_candidates(&self) -> Vec<&String> {
+        let token = self.tag_token().to_lowercase();
+        if token.is_empty() {
+            return Vec::new();
+        }
+        let present: std::collections::HashSet<&str> = self
+            .tags
+            .text()
+            .split([',', ' '])
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.tag_pool
+            .iter()
+            .filter(|t| {
+                t.starts_with(&token) && t.as_str() != token && !present.contains(t.as_str())
+            })
+            .collect()
+    }
+
+    /// The ghost suffix shown after the typed token, if any candidate matches.
+    fn tag_ghost(&self) -> Option<String> {
+        let candidates = self.tag_candidates();
+        if candidates.is_empty() {
+            return None;
+        }
+        let token = self.tag_token().to_lowercase();
+        candidates[self.tag_pick % candidates.len()]
+            .strip_prefix(token.as_str())
+            .map(str::to_string)
+    }
+
+    /// Accept the current ghost, completing the tag in place.
+    fn accept_tag_ghost(&mut self) -> bool {
+        if let Some(ghost) = self.tag_ghost() {
+            self.tags.insert_str(&ghost);
+            self.tag_pick = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn cycle_tag(&mut self, delta: isize) {
+        let n = self.tag_candidates().len();
+        if n == 0 {
+            return;
+        }
+        self.tag_pick = (self.tag_pick as isize + delta).rem_euclid(n as isize) as usize;
+    }
+
+    /// Route an editing key to the focused field. In the tags field, → accepts the
+    /// ghost completion and Ctrl-N/P cycle candidates.
+    fn handle_field_key(&mut self, key: KeyEvent) {
+        if self.focus == TAGS_FIELD {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Right if self.tags.at_end() && self.tag_ghost().is_some() => {
+                    self.accept_tag_ghost();
+                    return;
+                }
+                KeyCode::Char('n') if ctrl => return self.cycle_tag(1),
+                KeyCode::Char('p') if ctrl => return self.cycle_tag(-1),
+                _ => {}
+            }
+            if self.tags.handle_key(key) == Handled::Edited {
+                self.tag_pick = 0; // a fresh edit resets the ghost to the best match
+            }
+            return;
+        }
+        self.field().handle_key(key);
     }
 
     /// Alt-Enter adds a line to the command field only; the why and tags stay single-line.
@@ -1029,12 +1152,22 @@ fn render_form(f: &mut Frame, form: &FormState, theme: &Theme) {
         ),
         description,
     );
+    // The tags field trails a dim ghost of the best-matching existing tag (→ accepts).
+    let tags_focused = form.focus == TAGS_FIELD;
+    let mut tag_spans = vec![Span::raw(form.tags.text().to_string())];
+    if tags_focused && let Some(ghost) = form.tag_ghost() {
+        tag_spans.push(Span::styled(ghost, theme.dim));
+    }
+    let tag_border = if tags_focused {
+        theme.accent
+    } else {
+        Style::new()
+    };
     f.render_widget(
-        field(
-            form.tags.text(),
-            "tags (space or comma separated)",
-            form.focus == 2,
-            theme,
+        Paragraph::new(Line::from(tag_spans)).block(
+            Block::bordered()
+                .title("tags (space or comma separated)")
+                .border_style(tag_border),
         ),
         tags,
     );
@@ -1047,13 +1180,12 @@ fn render_form(f: &mut Frame, form: &FormState, theme: &Theme) {
     let (row, col) = focused.cursor_row_col();
     set_area_cursor(f, focused_area, row, col);
 
-    f.render_widget(
-        Paragraph::new(Line::styled(
-            "tab move · alt+⏎ newline · enter save · esc cancel",
-            theme.dim,
-        )),
-        help,
-    );
+    let hint = if tags_focused {
+        "→ accept tag · ^n/^p cycle · enter save · esc cancel"
+    } else {
+        "tab move · alt+⏎ newline · enter save · esc cancel"
+    };
+    f.render_widget(Paragraph::new(Line::styled(hint, theme.dim)), help);
 }
 
 fn field<'a>(value: &'a str, label: &'a str, focused: bool, theme: &Theme) -> Paragraph<'a> {
@@ -1398,8 +1530,57 @@ mod tests {
     }
 
     #[test]
+    fn tag_ghost_completes_from_the_pool() {
+        let pool = vec![
+            "docker".to_string(),
+            "deploy".to_string(),
+            "git".to_string(),
+        ];
+        let mut form = FormState::new("cmd", "why", "doc", pool);
+        form.focus = TAGS_FIELD;
+        assert_eq!(form.tag_ghost().as_deref(), Some("ker"));
+        // Cycle to the other "d…" candidate.
+        form.cycle_tag(1);
+        assert_eq!(form.tag_token(), "doc");
+        // "deploy" doesn't extend "doc", so the only candidate is "docker".
+        assert_eq!(form.tag_candidates().len(), 1);
+        form.accept_tag_ghost();
+        assert_eq!(form.tags.text(), "docker");
+    }
+
+    #[test]
+    fn tag_ghost_skips_already_present_tags() {
+        let pool = vec!["docker".to_string()];
+        let mut form = FormState::new("cmd", "why", "docker doc", pool);
+        form.focus = TAGS_FIELD;
+        // "docker" is already present, so typing "doc" again offers no completion.
+        assert!(form.tag_ghost().is_none());
+    }
+
+    #[test]
+    fn no_matches_teaches_in_the_empty_list() {
+        let memories = vec![mem(1, "docker ps", Some("containers"), &["docker"])];
+        let mut app = App::new(memories, 0);
+        for c in "zznomatch".chars() {
+            app.handle_picker(key(KeyCode::Char(c))).unwrap();
+        }
+        app.settle();
+        assert!(app.results.is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
+        terminal.draw(|f| app.render(f)).unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("no matches"), "missing teach text:\n{text}");
+    }
+
+    #[test]
     fn alt_enter_adds_a_line_only_to_the_command() {
-        let mut form = FormState::new("docker run", "why", "");
+        let mut form = FormState::new("docker run", "why", "", Vec::new());
         form.newline();
         assert_eq!(form.command.line_count(), 2);
         form.next(); // focus the why field
@@ -1419,7 +1600,7 @@ mod tests {
 
     #[test]
     fn form_edits_the_focused_field_and_cycles() {
-        let mut s = FormState::new("docker ps", "", "");
+        let mut s = FormState::new("docker ps", "", "", Vec::new());
         s.next();
         s.field().insert('h');
         s.field().insert('i');
@@ -1433,7 +1614,7 @@ mod tests {
 
     #[test]
     fn form_prefills_all_fields() {
-        let s = FormState::new("docker ps", "list containers", "docker cleanup");
+        let s = FormState::new("docker ps", "list containers", "docker cleanup", Vec::new());
         let theme = Theme::detect();
         let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
         terminal.draw(|f| render_form(f, &s, &theme)).unwrap();

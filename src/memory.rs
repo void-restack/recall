@@ -46,6 +46,18 @@ pub struct ImportRecord {
     pub last_used_at: Option<i64>,
 }
 
+/// The distinct tags across a set of memories, sorted — for tag autocompletion.
+pub fn collect_tags(memories: &[CommandMemory]) -> Vec<String> {
+    let mut set: Vec<String> = memories
+        .iter()
+        .flat_map(|m| m.tags.iter().cloned())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    set.sort();
+    set
+}
+
 /// Normalize so `Docker`, `docker`, and ` docker ` don't fragment the collection.
 pub fn normalize_tags(raw: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -71,6 +83,22 @@ mod tests {
             "Disk Cleanup".into(),
         ]);
         assert_eq!(got, vec!["docker".to_string(), "disk-cleanup".to_string()]);
+    }
+
+    #[test]
+    fn collect_tags_returns_sorted_distinct_tags() {
+        let m = |tags: &[&str]| CommandMemory {
+            id: 0,
+            command: "c".into(),
+            description: None,
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            created_at: 0,
+            updated_at: 0,
+            use_count: 0,
+            last_used_at: None,
+        };
+        let memories = vec![m(&["docker", "git"]), m(&["git", "aws"])];
+        assert_eq!(collect_tags(&memories), vec!["aws", "docker", "git"]);
     }
 
     #[test]

@@ -119,6 +119,11 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// The distinct tags across all memories, sorted — for form autocompletion.
+    pub fn all_tags(&self) -> Result<Vec<String>> {
+        Ok(crate::memory::collect_tags(&self.list()?))
+    }
+
     pub fn record_use(&self, id: i64, now: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE memories SET use_count = use_count + 1, last_used_at = ?2 WHERE id = ?1",

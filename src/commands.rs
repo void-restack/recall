@@ -36,7 +36,8 @@ pub fn add(args: AddArgs) -> Result<()> {
 }
 
 fn add_via_form(initial: String, force: bool) -> Result<()> {
-    let Some(form) = crate::tui::add_form(&initial, "", "")? else {
+    let tag_pool = Store::open()?.all_tags().unwrap_or_default();
+    let Some(form) = crate::tui::add_form(&initial, "", "", &tag_pool)? else {
         eprintln!("cancelled");
         return Ok(());
     };
@@ -261,7 +262,8 @@ pub fn history(args: HistoryArgs) -> Result<()> {
         eprintln!("cancelled");
         return Ok(());
     };
-    let Some(form) = crate::tui::add_form(&entries[index], "", "")? else {
+    let tag_pool = Store::open()?.all_tags().unwrap_or_default();
+    let Some(form) = crate::tui::add_form(&entries[index], "", "", &tag_pool)? else {
         eprintln!("cancelled");
         return Ok(());
     };

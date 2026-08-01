@@ -55,6 +55,11 @@ impl LineEditor {
         self.text.matches('\n').count() + 1
     }
 
+    /// Whether the cursor sits at the very end of the buffer.
+    pub fn at_end(&self) -> bool {
+        self.cursor == self.text.len()
+    }
+
     /// Apply a standard editing/motion key. Returns `Ignored` for keys this editor
     /// doesn't own (Enter, Tab, arrows used for list nav, etc.) so the caller can.
     pub fn handle_key(&mut self, key: KeyEvent) -> Handled {
