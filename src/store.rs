@@ -24,6 +24,13 @@ impl Store {
         Ok(store)
     }
 
+    #[cfg(test)]
+    fn in_memory() -> Result<Self> {
+        let store = Self { conn: Connection::open_in_memory()? };
+        store.migrate()?;
+        Ok(store)
+    }
+
     fn migrate(&self) -> Result<()> {
         // Each step runs once and bumps `user_version`; new steps append below.
         let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -81,6 +88,26 @@ impl Store {
             .context("reading memories")
     }
 
+    pub fn update(&self, m: &CommandMemory, now: i64) -> Result<()> {
+        let tags_json = serde_json::to_string(&m.tags)?;
+        let changed = self.conn.execute(
+            "UPDATE memories SET command = ?2, description = ?3, tags = ?4, updated_at = ?5
+             WHERE id = ?1",
+            rusqlite::params![m.id, m.command, m.description, tags_json, now],
+        )?;
+        if changed == 0 {
+            anyhow::bail!("no memory #{}", m.id);
+        }
+        Ok(())
+    }
+
+    pub fn delete(&self, id: i64) -> Result<bool> {
+        let changed = self
+            .conn
+            .execute("DELETE FROM memories WHERE id = ?1", [id])?;
+        Ok(changed > 0)
+    }
+
     pub fn record_use(&self, id: i64) -> Result<()> {
         self.conn
             .execute("UPDATE memories SET use_count = use_count + 1 WHERE id = ?1", [id])?;
@@ -106,4 +133,46 @@ fn restrict_permissions(path: &std::path::Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
         .with_context(|| format!("restricting permissions on {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> NewMemory {
+        NewMemory {
+            command: "docker ps".into(),
+            description: Some("list containers".into()),
+            tags: vec!["docker".into()],
+        }
+    }
+
+    #[test]
+    fn insert_get_update_delete_roundtrip() {
+        let store = Store::in_memory().unwrap();
+
+        let saved = store.insert(&sample(), 100).unwrap();
+        assert_eq!(saved.id, 1);
+        assert_eq!(store.get(1).unwrap().unwrap().command, "docker ps");
+
+        let mut edited = saved.clone();
+        edited.description = Some("list running containers".into());
+        store.update(&edited, 200).unwrap();
+        let reloaded = store.get(1).unwrap().unwrap();
+        assert_eq!(reloaded.description.as_deref(), Some("list running containers"));
+        assert_eq!(reloaded.updated_at, 200);
+
+        assert!(store.delete(1).unwrap());
+        assert!(store.get(1).unwrap().is_none());
+        assert!(!store.delete(1).unwrap());
+    }
+
+    #[test]
+    fn record_use_increments_count() {
+        let store = Store::in_memory().unwrap();
+        let m = store.insert(&sample(), 0).unwrap();
+        store.record_use(m.id).unwrap();
+        store.record_use(m.id).unwrap();
+        assert_eq!(store.get(m.id).unwrap().unwrap().use_count, 2);
+    }
 }

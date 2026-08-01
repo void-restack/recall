@@ -16,6 +16,8 @@ fn main() -> anyhow::Result<()> {
         Command::List => commands::list(),
         Command::Search(args) => commands::search(args),
         Command::Get(args) => commands::get(args),
+        Command::Edit(args) => commands::edit(args),
+        Command::Delete(args) => commands::delete(args),
         Command::Export => commands::export(),
     }
 }

@@ -20,6 +20,12 @@ pub enum Command {
     /// Print a Memory's command to stdout (and count it as used)
     Get(GetArgs),
 
+    /// Edit a Memory's command, description, or tags
+    Edit(EditArgs),
+
+    /// Delete a Memory (asks for confirmation)
+    Delete(DeleteArgs),
+
     /// Export all Memories as JSONL
     Export,
 }
@@ -53,4 +59,36 @@ pub struct SearchArgs {
 pub struct GetArgs {
     /// The id shown by `list` or `search`
     pub id: i64,
+}
+
+#[derive(Args)]
+pub struct EditArgs {
+    /// The id to edit
+    pub id: i64,
+
+    /// Replace the command text
+    #[arg(short = 'c', long)]
+    pub command: Option<String>,
+
+    /// Set the description; pass an empty string to clear it (back to a Draft)
+    #[arg(short, long)]
+    pub description: Option<String>,
+
+    /// Replace the whole tag set; repeat for several
+    #[arg(short, long = "tag")]
+    pub tag: Vec<String>,
+
+    /// Remove all tags
+    #[arg(long)]
+    pub clear_tags: bool,
+}
+
+#[derive(Args)]
+pub struct DeleteArgs {
+    /// The id to delete
+    pub id: i64,
+
+    /// Skip the confirmation prompt
+    #[arg(short = 'y', long)]
+    pub yes: bool,
 }

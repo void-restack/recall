@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 
-use crate::cli::{AddArgs, GetArgs, SearchArgs};
+use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, SearchArgs};
 use crate::memory::{self, CommandMemory, NewMemory};
 use crate::store::Store;
 
@@ -68,6 +68,61 @@ pub fn export() -> Result<()> {
         println!("{}", serde_json::to_string(&m)?);
     }
     Ok(())
+}
+
+pub fn edit(args: EditArgs) -> Result<()> {
+    let store = Store::open()?;
+    let mut m = store
+        .get(args.id)?
+        .ok_or_else(|| anyhow!("no memory #{}", args.id))?;
+
+    let mut changed = false;
+    if let Some(command) = args.command {
+        m.command = command;
+        changed = true;
+    }
+    if let Some(description) = args.description {
+        m.description = clean_description(Some(description));
+        changed = true;
+    }
+    if args.clear_tags {
+        m.tags.clear();
+        changed = true;
+    } else if !args.tag.is_empty() {
+        m.tags = memory::normalize_tags(args.tag);
+        changed = true;
+    }
+    if !changed {
+        anyhow::bail!("nothing to change — pass -c, -d, or -t");
+    }
+
+    store.update(&m, now_millis())?;
+    eprintln!("updated #{}", m.id);
+    Ok(())
+}
+
+pub fn delete(args: DeleteArgs) -> Result<()> {
+    let store = Store::open()?;
+    let m = store
+        .get(args.id)?
+        .ok_or_else(|| anyhow!("no memory #{}", args.id))?;
+
+    if !args.yes && !confirm(&m)? {
+        eprintln!("cancelled");
+        return Ok(());
+    }
+    store.delete(m.id)?;
+    eprintln!("deleted #{}", m.id);
+    Ok(())
+}
+
+fn confirm(m: &CommandMemory) -> Result<bool> {
+    use std::io::Write;
+    eprint!("delete #{}  {} ? [y/N] ", m.id, m.command);
+    std::io::stderr().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
 fn print_row(m: &CommandMemory) {
