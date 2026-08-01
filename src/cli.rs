@@ -17,7 +17,7 @@ pub enum Command {
     /// Save a command as a Memory
     Add(AddArgs),
     /// List saved Memories, newest first
-    List,
+    List(ListArgs),
 
     /// Search Memories by fuzzy, typo-tolerant matching
     Search(SearchArgs),
@@ -61,6 +61,13 @@ pub struct AddArgs {
     /// Tag to attach; repeat for several (e.g. -t docker -t cleanup)
     #[arg(short, long = "tag")]
     pub tag: Vec<String>,
+}
+
+#[derive(Args)]
+pub struct ListArgs {
+    /// Show only Drafts — memories captured without a description yet
+    #[arg(long)]
+    pub drafts: bool,
 }
 
 #[derive(Args)]

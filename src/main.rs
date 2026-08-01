@@ -17,7 +17,7 @@ fn main() -> anyhow::Result<()> {
     paths::set_db_override(cli.db);
     match cli.command {
         Some(Command::Add(args)) => commands::add(args),
-        Some(Command::List) => commands::list(),
+        Some(Command::List(args)) => commands::list(args),
         Some(Command::Search(args)) => commands::search(args),
         Some(Command::Get(args)) => commands::get(args),
         Some(Command::Edit(args)) => commands::edit(args),

@@ -49,6 +49,8 @@ pub fn search<'a>(query: &str, memories: &'a [CommandMemory], limit: usize) -> V
         matched[b]
             .cmp(&matched[a])
             .then(score[b].cmp(&score[a]))
+            // On an otherwise equal match, a Curated memory outranks a Draft.
+            .then(memories[a].is_draft().cmp(&memories[b].is_draft()))
             .then(memories[b].use_count.cmp(&memories[a].use_count))
             .then(memories[b].last_used_at.cmp(&memories[a].last_used_at))
     });
@@ -138,6 +140,14 @@ mod tests {
     fn no_matches_returns_empty() {
         let c = corpus();
         assert!(search("zzzznomatch", &c, 10).is_empty());
+    }
+
+    #[test]
+    fn curated_ranks_ahead_of_a_draft_for_the_same_command() {
+        let draft = mem(1, "docker ps", None, &["docker"]);
+        let curated = mem(2, "docker ps", Some("list running containers"), &["docker"]);
+        let memories = [draft, curated];
+        assert_eq!(search("docker", &memories, 10).first().map(|m| m.id), Some(2));
     }
 
     #[test]

@@ -2,7 +2,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::cli::{AddArgs, DeleteArgs, EditArgs, GetArgs, ImportArgs, InitArgs, SearchArgs, Shell};
+use crate::cli::{
+    AddArgs, DeleteArgs, EditArgs, GetArgs, ImportArgs, InitArgs, ListArgs, SearchArgs, Shell,
+};
 use crate::memory::{self, CommandMemory, ImportRecord, NewMemory};
 use crate::store::Store;
 use crate::{paths, shell};
@@ -109,11 +111,19 @@ pub fn pick() -> Result<()> {
     Ok(())
 }
 
-pub fn list() -> Result<()> {
+pub fn list(args: ListArgs) -> Result<()> {
     let store = Store::open()?;
-    let memories = store.list()?;
+    let mut memories = store.list()?;
+    if args.drafts {
+        memories.retain(CommandMemory::is_draft);
+    }
     if memories.is_empty() {
-        eprintln!("no memories yet — capture one with `recall add`");
+        let message = if args.drafts {
+            "no drafts — everything is annotated"
+        } else {
+            "no memories yet — capture one with `recall add`"
+        };
+        eprintln!("{message}");
         return Ok(());
     }
     for m in &memories {
