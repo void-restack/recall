@@ -9,7 +9,7 @@ rust-version = "1.89" # frizbee's MSRV
 publish = false
 
 [dependencies]
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 directories = "6"
 anyhow = "1"

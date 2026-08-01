@@ -14,6 +14,7 @@ use crate::cli::{Cli, Command};
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    paths::set_db_override(cli.db);
     match cli.command {
         Some(Command::Add(args)) => commands::add(args),
         Some(Command::List) => commands::list(),
