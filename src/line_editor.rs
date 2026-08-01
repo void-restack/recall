@@ -39,6 +39,22 @@ impl LineEditor {
         self.text[..self.cursor].chars().count()
     }
 
+    /// The cursor's (row, column) for a field that may hold newlines.
+    pub fn cursor_row_col(&self) -> (usize, usize) {
+        let before = &self.text[..self.cursor];
+        let row = before.matches('\n').count();
+        let col = before
+            .rsplit('\n')
+            .next()
+            .map_or(0, |line| line.chars().count());
+        (row, col)
+    }
+
+    /// How many display lines the buffer spans (at least 1).
+    pub fn line_count(&self) -> usize {
+        self.text.matches('\n').count() + 1
+    }
+
     /// Apply a standard editing/motion key. Returns `Ignored` for keys this editor
     /// doesn't own (Enter, Tab, arrows used for list nav, etc.) so the caller can.
     pub fn handle_key(&mut self, key: KeyEvent) -> Handled {
@@ -316,6 +332,16 @@ mod tests {
         assert_eq!(e.text(), "café☕");
         e.handle_key(key(KeyCode::Backspace, KeyModifiers::NONE));
         assert_eq!(e.text(), "café");
+    }
+
+    #[test]
+    fn tracks_rows_and_columns_across_newlines() {
+        let mut e = LineEditor::new("docker run \\");
+        e.insert('\n');
+        e.insert(' ');
+        e.insert('x');
+        assert_eq!(e.line_count(), 2);
+        assert_eq!(e.cursor_row_col(), (1, 2));
     }
 
     #[test]

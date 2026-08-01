@@ -365,7 +365,16 @@ fn print_row(m: &CommandMemory) {
     } else {
         format!("  [{}]", m.tags.join(", "))
     };
-    println!("{:>4}{draft}  {}{desc}{tags}", m.id, m.command);
+    println!("{:>4}{draft}  {}{desc}{tags}", m.id, one_line(&m.command));
+}
+
+/// Collapse a multi-line command to its first line plus a `⏎N` marker, so a list
+/// row never spills raw newlines. `get`/the picker still emit the command verbatim.
+fn one_line(command: &str) -> String {
+    match command.split_once('\n') {
+        Some((first, rest)) => format!("{first} ⏎{}", rest.lines().count()),
+        None => command.to_string(),
+    }
 }
 
 fn clean_description(raw: Option<String>) -> Option<String> {

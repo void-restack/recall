@@ -202,9 +202,15 @@ impl App {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
                 match key.code {
                     KeyCode::Esc => self.mode = Mode::Picker,
                     KeyCode::Char('c') if ctrl => self.mode = Mode::Picker,
+                    KeyCode::Enter if alt => {
+                        if let Mode::Editing { form, .. } = &mut self.mode {
+                            form.newline();
+                        }
+                    }
                     KeyCode::Enter => self.commit_edit(store)?,
                     KeyCode::Tab | KeyCode::Down => {
                         if let Mode::Editing { form, .. } = &mut self.mode {
@@ -341,15 +347,21 @@ fn page_selection(state: &mut ListState, len: usize, delta: isize) {
     state.select(Some(next));
 }
 
-/// Place the terminal caret at `col` inside a bordered single-line box, so the
-/// active line editor shows a real, native cursor. Clamped to the box interior.
+/// Place the terminal caret at `col` on the first line of a bordered box.
 fn set_line_cursor(f: &mut Frame, area: Rect, col: usize) {
+    set_area_cursor(f, area, 0, col);
+}
+
+/// Place the terminal caret at `(row, col)` inside a bordered box, so the active
+/// line editor shows a real, native cursor. Clamped to the box interior.
+fn set_area_cursor(f: &mut Frame, area: Rect, row: usize, col: usize) {
     let inner = Block::bordered().inner(area);
-    if inner.width == 0 {
+    if inner.width == 0 || inner.height == 0 {
         return;
     }
     let x = (inner.x + col as u16).min(inner.right().saturating_sub(1));
-    f.set_cursor_position(Position { x, y: inner.y });
+    let y = (inner.y + row as u16).min(inner.bottom().saturating_sub(1));
+    f.set_cursor_position(Position { x, y });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -510,7 +522,12 @@ fn render_detail_strip(
         return;
     };
     let width = area.width as usize;
-    let first = Line::from(fit_spans(program_spans(&m.command, theme), width));
+    let (cmd, extra) = split_command(&m.command);
+    let mut cmd_spans = program_spans(cmd, theme);
+    if extra > 0 {
+        cmd_spans.push(Span::styled(format!(" ⏎{extra}"), theme.accent));
+    }
+    let first = Line::from(fit_spans(cmd_spans, width));
     let second = match m.description.as_deref().filter(|d| !d.is_empty()) {
         Some(desc) => Line::styled(truncate_str(desc, width), theme.dim),
         None => Line::styled(truncate_str(&usage_line(m, now), width), theme.dim),
@@ -531,8 +548,14 @@ fn preview_text<'a>(
     };
     let mut lines: Vec<Line> = Vec::new();
 
-    // Command with its first token (the program) bold.
-    lines.push(program_first(&m.command, theme));
+    // Command verbatim: first line with the program bold, further lines as-is.
+    for (i, line) in m.command.lines().enumerate() {
+        if i == 0 {
+            lines.push(program_first(line, theme));
+        } else {
+            lines.push(Line::raw(line.to_string()));
+        }
+    }
     lines.push(Line::default());
 
     match m.description.as_deref().filter(|d| !d.is_empty()) {
@@ -595,7 +618,12 @@ fn row_line(m: &CommandMemory, query: &str, theme: &Theme, width: usize) -> Line
         Span::styled("● ", theme.dim)
     };
     let mut spans = vec![badge];
-    spans.extend(command_spans(&m.command, query, theme));
+    // A multiline command collapses to its first line plus a ⏎N line-count marker.
+    let (first, extra) = split_command(&m.command);
+    spans.extend(command_spans(first, query, theme));
+    if extra > 0 {
+        spans.push(Span::styled(format!(" ⏎{extra}"), theme.accent));
+    }
     if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
         spans.push(Span::styled(format!("  — {desc}"), theme.dim));
     }
@@ -606,6 +634,14 @@ fn row_line(m: &CommandMemory, query: &str, theme: &Theme, width: usize) -> Line
         ));
     }
     Line::from(fit_spans(spans, width))
+}
+
+/// First line of a command and how many further lines it has, for compact rows.
+fn split_command(command: &str) -> (&str, usize) {
+    match command.split_once('\n') {
+        Some((first, rest)) => (first, rest.lines().count()),
+        None => (command, 0),
+    }
 }
 
 /// Truncate a span run to `width` columns, appending `…` when it overflows. Trims
@@ -839,9 +875,11 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
             Event::Paste(text) => form.field().insert_str(&text),
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let alt = key.modifiers.contains(KeyModifiers::ALT);
                 match key.code {
                     KeyCode::Esc => break None,
                     KeyCode::Char('c') if ctrl => break None,
+                    KeyCode::Enter if alt => form.newline(),
                     KeyCode::Enter if !form.command_is_blank() => break Some(form.into_add_form()),
                     KeyCode::Tab | KeyCode::Down => form.next(),
                     KeyCode::BackTab | KeyCode::Up => form.prev(),
@@ -891,6 +929,13 @@ impl FormState {
         self.focus = (self.focus + 2) % 3;
     }
 
+    /// Alt-Enter adds a line to the command field only; the why and tags stay single-line.
+    fn newline(&mut self) {
+        if self.focus == 0 {
+            self.command.insert('\n');
+        }
+    }
+
     fn command_is_blank(&self) -> bool {
         self.command.text().trim().is_empty()
     }
@@ -905,8 +950,10 @@ impl FormState {
 }
 
 fn render_form(f: &mut Frame, form: &FormState, theme: &Theme) {
+    // The command box grows with its line count (capped) so multi-line commands show.
+    let command_rows = form.command.line_count().clamp(1, 5) as u16;
     let [command, description, tags, help] = Layout::vertical([
-        Constraint::Length(3),
+        Constraint::Length(command_rows + 2),
         Constraint::Length(3),
         Constraint::Length(3),
         Constraint::Min(1),
@@ -941,11 +988,12 @@ fn render_form(f: &mut Frame, form: &FormState, theme: &Theme) {
         1 => (description, &form.description),
         _ => (tags, &form.tags),
     };
-    set_line_cursor(f, focused_area, focused.cursor_col());
+    let (row, col) = focused.cursor_row_col();
+    set_area_cursor(f, focused_area, row, col);
 
     f.render_widget(
         Paragraph::new(Line::styled(
-            "tab move · enter save · esc cancel",
+            "tab move · alt+⏎ newline · enter save · esc cancel",
             theme.dim,
         )),
         help,
@@ -1255,6 +1303,27 @@ mod tests {
             text.starts_with("● docker"),
             "command clipped first: {text:?}"
         );
+    }
+
+    #[test]
+    fn multiline_command_collapses_to_a_line_marker_in_a_row() {
+        let theme = Theme::detect();
+        let m = mem(1, "docker run \\\n  -it ubuntu", Some("shell"), &[]);
+        let line = row_line(&m, "", &theme, 80);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("docker run"));
+        assert!(text.contains("⏎1"), "missing line marker: {text:?}");
+        assert!(!text.contains('\n'), "row spilled a newline: {text:?}");
+    }
+
+    #[test]
+    fn alt_enter_adds_a_line_only_to_the_command() {
+        let mut form = FormState::new("docker run", "why", "");
+        form.newline();
+        assert_eq!(form.command.line_count(), 2);
+        form.next(); // focus the why field
+        form.newline();
+        assert_eq!(form.description.line_count(), 1);
     }
 
     #[test]
