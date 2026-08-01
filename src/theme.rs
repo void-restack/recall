@@ -12,6 +12,8 @@ pub struct Theme {
     pub dim: Style,
     /// The first token of a command (the program).
     pub strong: Style,
+    /// Draft marker in the row gutter.
+    pub draft: Style,
     /// Destructive actions only.
     pub danger: Style,
     /// Tag chips.
@@ -40,6 +42,7 @@ impl Theme {
             matched: fg(Color::Cyan).add_modifier(Modifier::BOLD),
             dim: Style::new().add_modifier(Modifier::DIM),
             strong: Style::new().add_modifier(Modifier::BOLD),
+            draft: fg(Color::Yellow),
             danger: fg(Color::Red),
             tag: fg(Color::Blue),
             selection: fg(Color::Cyan).add_modifier(Modifier::REVERSED),
@@ -65,6 +68,7 @@ mod tests {
     fn colored_assigns_the_palette() {
         let t = Theme::new(true);
         assert_eq!(t.accent.fg, Some(Color::Cyan));
+        assert_eq!(t.draft.fg, Some(Color::Yellow));
         assert_eq!(t.danger.fg, Some(Color::Red));
         assert_eq!(t.tag.fg, Some(Color::Blue));
     }

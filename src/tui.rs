@@ -86,6 +86,7 @@ struct App {
     state: ListState,
     mode: Mode,
     dirty: bool,
+    drafts_only: bool,
     theme: Theme,
     now: i64,
 }
@@ -93,20 +94,21 @@ struct App {
 impl App {
     fn new(memories: Vec<CommandMemory>, now: i64) -> Self {
         let haystacks = search::build_haystacks(&memories);
-        let results: Vec<usize> = (0..memories.len()).collect();
-        let mut state = ListState::default();
-        state.select((!results.is_empty()).then_some(0));
-        Self {
+        let mut app = Self {
             memories,
             haystacks,
             query: LineEditor::default(),
-            results,
-            state,
+            results: Vec::new(),
+            state: ListState::default(),
             mode: Mode::Picker,
             dirty: false,
+            drafts_only: false,
             theme: Theme::detect(),
             now,
-        }
+        };
+        app.recompute_results();
+        app.state.select((!app.results.is_empty()).then_some(0));
+        app
     }
 
     fn selected_memory(&self) -> Option<&CommandMemory> {
@@ -129,6 +131,7 @@ impl App {
             &self.memories,
             &mut self.state,
             confirming,
+            self.drafts_only,
             &self.theme,
             self.now,
         );
@@ -174,6 +177,10 @@ impl App {
                     }
                     KeyCode::PageUp => page_selection(&mut self.state, self.results.len(), -PAGE),
                     KeyCode::PageDown => page_selection(&mut self.state, self.results.len(), PAGE),
+                    KeyCode::Char('d') if ctrl => {
+                        self.drafts_only = !self.drafts_only;
+                        self.dirty = true;
+                    }
                     _ => {
                         if self.query.handle_key(key) == Handled::Edited {
                             self.dirty = true;
@@ -284,7 +291,16 @@ impl App {
     }
 
     fn recompute_results(&mut self) {
-        self.results = filter(self.query.text(), &self.memories, &self.haystacks);
+        let mut results = if self.query.text().trim().is_empty() {
+            // No query: rank by frecency instead of insertion order.
+            search::frecency_order(&self.memories, self.now)
+        } else {
+            search::ranked_indices(self.query.text(), &self.memories, &self.haystacks, 200)
+        };
+        if self.drafts_only {
+            results.retain(|&i| self.memories[i].is_draft());
+        }
+        self.results = results;
     }
 
     /// Select the row at `pos`, clamped — the neighbor of a deleted row.
@@ -292,13 +308,6 @@ impl App {
         let sel = (!self.results.is_empty()).then(|| pos.min(self.results.len() - 1));
         self.state.select(sel);
     }
-}
-
-fn filter(query: &str, memories: &[CommandMemory], haystacks: &[String]) -> Vec<usize> {
-    if query.trim().is_empty() {
-        return (0..memories.len()).collect();
-    }
-    search::ranked_indices(query, memories, haystacks, 200)
 }
 
 fn reselect(state: &mut ListState, len: usize) {
@@ -351,6 +360,7 @@ fn render_picker(
     memories: &[CommandMemory],
     state: &mut ListState,
     confirming: bool,
+    drafts_only: bool,
     theme: &Theme,
     now: i64,
 ) {
@@ -375,7 +385,16 @@ fn render_picker(
         let [list_area, preview_area] =
             Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)])
                 .areas(middle);
-        render_list(f, list_area, results, memories, state, query.text(), theme);
+        render_list(
+            f,
+            list_area,
+            results,
+            memories,
+            state,
+            query.text(),
+            drafts_only,
+            theme,
+        );
         let preview = preview_text(
             results,
             memories,
@@ -393,10 +412,28 @@ fn render_picker(
     } else if area.width >= 60 {
         let [list_area, strip] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(middle);
-        render_list(f, list_area, results, memories, state, query.text(), theme);
+        render_list(
+            f,
+            list_area,
+            results,
+            memories,
+            state,
+            query.text(),
+            drafts_only,
+            theme,
+        );
         render_detail_strip(f, strip, results, memories, state.selected(), theme, now);
     } else {
-        render_list(f, middle, results, memories, state, query.text(), theme);
+        render_list(
+            f,
+            middle,
+            results,
+            memories,
+            state,
+            query.text(),
+            drafts_only,
+            theme,
+        );
     }
 
     let help_line = if confirming {
@@ -410,13 +447,14 @@ fn render_picker(
 /// The footer adapts to width: the full key legend when there's room, a terse one
 /// when there isn't.
 fn footer_hint(width: u16) -> &'static str {
-    if width >= 76 {
-        "↑/↓ move · pgup/pgdn page · ⏎ print · ^o edit · ^x delete · esc quit"
+    if width >= 84 {
+        "↑/↓ move · pgup/pgdn page · ⏎ print · ^o edit · ^x delete · ^d drafts · esc quit"
     } else {
-        "↑↓ move · ⏎ print · ^o edit · ^x del · esc quit"
+        "↑↓ move · ⏎ print · ^o edit · ^x del · ^d drafts · esc quit"
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_list(
     f: &mut Frame,
     area: Rect,
@@ -424,6 +462,7 @@ fn render_list(
     memories: &[CommandMemory],
     state: &mut ListState,
     query: &str,
+    drafts_only: bool,
     theme: &Theme,
 ) {
     // Reserve the interior minus the 2-cell highlight gutter for row text.
@@ -433,11 +472,22 @@ fn render_list(
         .map(|&i| ListItem::new(row_line(&memories[i], query, theme, text_width)))
         .collect();
     let pos = state.selected().map_or(0, |i| i + 1);
-    let title = if results.is_empty() {
+    let mut title = if results.is_empty() {
         "no matches".to_string()
     } else {
         format!("{pos}/{}", results.len())
     };
+    if drafts_only {
+        title.push_str(" · drafts only");
+    } else {
+        let drafts = memories.iter().filter(|m| m.is_draft()).count();
+        if drafts > 0 {
+            title.push_str(&format!(
+                " · {drafts} draft{}",
+                if drafts == 1 { "" } else { "s" }
+            ));
+        }
+    }
     let list = List::new(items)
         .block(Block::bordered().title(title))
         .highlight_symbol("▌ ")
@@ -535,10 +585,17 @@ fn program_spans(command: &str, theme: &Theme) -> Vec<Span<'static>> {
     }
 }
 
-/// A row: matched-char-highlighted command, dim why, tag chips — truncated with an
-/// ellipsis to `width`, trimming the tail (tags, then why) before the command.
+/// A row: a curated/draft gutter badge, the matched-char-highlighted command, dim
+/// why, and tag chips — truncated with an ellipsis to `width`, trimming the tail
+/// (tags, then why) before the command.
 fn row_line(m: &CommandMemory, query: &str, theme: &Theme, width: usize) -> Line<'static> {
-    let mut spans = command_spans(&m.command, query, theme);
+    let badge = if m.is_draft() {
+        Span::styled("○ ", theme.draft)
+    } else {
+        Span::styled("● ", theme.dim)
+    };
+    let mut spans = vec![badge];
+    spans.extend(command_spans(&m.command, query, theme));
     if let Some(desc) = m.description.as_deref().filter(|d| !d.is_empty()) {
         spans.push(Span::styled(format!("  — {desc}"), theme.dim));
     }
@@ -1015,6 +1072,23 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_d_filters_to_drafts_only() {
+        let memories = vec![
+            mem(1, "docker ps", Some("curated"), &[]),
+            mem(2, "rm -rf tmp", None, &[]),
+        ];
+        let mut app = App::new(memories, 0);
+        let ctrl_d = Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_picker(ctrl_d).unwrap();
+        app.settle();
+        assert!(app.drafts_only);
+        assert_eq!(app.results, vec![1]);
+    }
+
+    #[test]
     fn edit_returns_to_the_picker_reselecting_by_id() {
         let memories = vec![mem(1, "alpha", None, &[]), mem(2, "beta", None, &[])];
         let store = MockStore {
@@ -1049,23 +1123,27 @@ mod tests {
     }
 
     #[test]
-    fn empty_query_shows_everything() {
+    fn empty_query_uses_frecency_order() {
         let memories = vec![
             mem(1, "docker ps", None, &[]),
             mem(2, "git stash", None, &[]),
         ];
-        let haystacks = search::build_haystacks(&memories);
-        assert_eq!(filter("", &memories, &haystacks), vec![0, 1]);
+        let app = App::new(memories, 0);
+        assert_eq!(app.results, vec![0, 1]);
     }
 
     #[test]
-    fn query_ranks_the_best_match_first() {
+    fn typing_ranks_the_best_match_first() {
         let memories = vec![
             mem(1, "docker ps", Some("list containers"), &["docker"]),
             mem(2, "git stash", Some("shelve changes"), &["git"]),
         ];
-        let haystacks = search::build_haystacks(&memories);
-        assert_eq!(filter("stash", &memories, &haystacks).first(), Some(&1));
+        let mut app = App::new(memories, 0);
+        for c in "stash".chars() {
+            app.handle_picker(key(KeyCode::Char(c))).unwrap();
+        }
+        app.settle();
+        assert_eq!(app.results.first(), Some(&1));
     }
 
     #[test]
@@ -1110,7 +1188,11 @@ mod tests {
         // ≥100 cols draws the side-by-side preview pane.
         let mut terminal = Terminal::new(TestBackend::new(110, 12)).unwrap();
         terminal
-            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false, &theme, 0))
+            .draw(|f| {
+                render_picker(
+                    f, &query, &results, &memories, &mut state, false, false, &theme, 0,
+                )
+            })
             .unwrap();
 
         let text: String = terminal
@@ -1135,7 +1217,11 @@ mod tests {
         let theme = Theme::detect();
         let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
         terminal
-            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false, &theme, 0))
+            .draw(|f| {
+                render_picker(
+                    f, &query, &results, &memories, &mut state, false, false, &theme, 0,
+                )
+            })
             .unwrap();
         let text: String = terminal
             .backend()
@@ -1164,8 +1250,9 @@ mod tests {
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 16, "overflowed: {text:?}");
         assert!(text.ends_with('…'), "no ellipsis: {text:?}");
+        // The curated badge and command survive; the tail (why/tags) is trimmed first.
         assert!(
-            text.starts_with("docker"),
+            text.starts_with("● docker"),
             "command clipped first: {text:?}"
         );
     }

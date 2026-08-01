@@ -139,6 +139,32 @@ pub fn search<'a>(
         .collect()
 }
 
+/// About 30 days, in milliseconds — the frecency half-life.
+const HALF_LIFE_MS: f64 = 30.0 * 86_400.0 * 1000.0;
+
+/// Order for the empty query: by frecency (use count decayed toward the last use),
+/// with drafts sunk beneath curated memories to nudge triage. Returns indices.
+pub fn frecency_order(memories: &[CommandMemory], now: i64) -> Vec<usize> {
+    let mut idx: Vec<usize> = (0..memories.len()).collect();
+    idx.sort_by(|&a, &b| {
+        let (x, y) = (&memories[a], &memories[b]);
+        x.is_draft()
+            .cmp(&y.is_draft())
+            .then(frecency_score(y, now).total_cmp(&frecency_score(x, now)))
+            .then(y.created_at.cmp(&x.created_at))
+    });
+    idx
+}
+
+/// Use count decayed by how long ago the memory was last used (falling back to when
+/// it was created). The `+1` keeps never-used memories ordered by recency alone.
+fn frecency_score(m: &CommandMemory, now: i64) -> f64 {
+    let last = m.last_used_at.unwrap_or(m.created_at);
+    let age = (now - last).max(0) as f64;
+    let decay = 0.5_f64.powf(age / HALF_LIFE_MS);
+    (m.use_count as f64 + 1.0) * decay
+}
+
 /// Rank plain lines (e.g. shell history) by the same fuzzy coverage, best first.
 pub fn rank_lines(query: &str, lines: &[String], limit: usize) -> Vec<usize> {
     if query.trim().is_empty() {
@@ -322,6 +348,19 @@ mod tests {
         assert!(matched.contains(&"docker".to_string()));
         assert!(matched.contains(&"containers".to_string()));
         assert!(dropped.contains(&"the".to_string()));
+    }
+
+    #[test]
+    fn frecency_ranks_recent_heavy_use_first_and_sinks_drafts() {
+        let mut heavy = mem(1, "docker ps", Some("used a lot"), &[]);
+        heavy.use_count = 20;
+        heavy.last_used_at = Some(1_000_000);
+        let light = mem(2, "git log", Some("rarely"), &[]);
+        let draft = mem(3, "rm -rf tmp", None, &[]); // no description = draft
+        let memories = vec![light, heavy, draft];
+        let order = frecency_order(&memories, 1_000_000);
+        assert_eq!(memories[order[0]].id, 1);
+        assert_eq!(memories[order[2]].id, 3);
     }
 
     #[test]
