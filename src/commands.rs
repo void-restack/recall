@@ -125,40 +125,45 @@ pub fn pick() -> Result<()> {
         anyhow::bail!("not a terminal — use `recall search <words>` instead");
     }
     let store = Store::open()?;
-    // Reloads each pass so edits and deletes made in the picker show immediately.
-    loop {
-        let memories = store.list()?;
-        if memories.is_empty() {
-            eprintln!("no memories yet — capture one with `recall add`");
-            return Ok(());
-        }
-        match crate::tui::run(&memories)? {
-            crate::tui::Outcome::Select(i) => {
-                let chosen = &memories[i];
-                store.record_use(chosen.id, now_millis())?;
-                println!("{}", chosen.command);
-                return Ok(());
-            }
-            crate::tui::Outcome::Edit(i) => update_via_form(&store, memories[i].clone())?,
-            crate::tui::Outcome::Delete(i) => {
-                store.delete(memories[i].id)?;
-            }
-            crate::tui::Outcome::Cancel => return Ok(()),
-        }
+    let memories = store.list()?;
+    if memories.is_empty() {
+        eprintln!("no memories yet — capture one with `recall add`");
+        return Ok(());
     }
+    let backend = PickerBackend { store: &store };
+    if let Some(chosen) = crate::tui::run(&backend, memories)? {
+        store.record_use(chosen.id, now_millis())?;
+        println!("{}", chosen.command);
+    }
+    Ok(())
 }
 
-fn update_via_form(store: &Store, mut memory: CommandMemory) -> Result<()> {
-    let description = memory.description.clone().unwrap_or_default();
-    let tags = memory.tags.join(" ");
-    let Some(form) = crate::tui::add_form(&memory.command, &description, &tags)? else {
-        return Ok(());
-    };
-    memory.command = form.command;
-    memory.description = clean_description(Some(form.description));
-    memory.tags = memory::normalize_tags(split_tags(&form.tags));
-    store.update(&memory, now_millis())?;
-    Ok(())
+/// Adapts the Store to the picker's persistence needs, so edits and deletes made
+/// inside the live viewport hit the database without leaving the TUI layer.
+struct PickerBackend<'a> {
+    store: &'a Store,
+}
+
+impl crate::tui::PickerStore for PickerBackend<'_> {
+    fn reload(&self) -> Result<Vec<CommandMemory>> {
+        self.store.list()
+    }
+
+    fn save_edit(&self, id: i64, form: crate::tui::AddForm) -> Result<()> {
+        let mut m = self
+            .store
+            .get(id)?
+            .ok_or_else(|| anyhow!("no memory #{id}"))?;
+        m.command = form.command;
+        m.description = clean_description(Some(form.description));
+        m.tags = memory::normalize_tags(split_tags(&form.tags));
+        self.store.update(&m, now_millis())
+    }
+
+    fn delete(&self, id: i64) -> Result<()> {
+        self.store.delete(id)?;
+        Ok(())
+    }
 }
 
 pub fn list(args: ListArgs) -> Result<()> {

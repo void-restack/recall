@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
@@ -18,79 +19,258 @@ use crate::search;
 
 type Term = Terminal<CrosstermBackend<io::Stderr>>;
 
-/// What the user chose in the picker. Indices point into the `memories` slice.
-pub enum Outcome {
-    Select(usize),
-    Edit(usize),
-    Delete(usize),
-    Cancel,
+/// Persistence the live picker drives while it stays open, so edits and deletes
+/// apply without tearing the viewport down and back up. Implemented over the Store
+/// in the command layer, keeping the TUI decoupled from the repository.
+pub trait PickerStore {
+    fn reload(&self) -> Result<Vec<CommandMemory>>;
+    fn save_edit(&self, id: i64, form: AddForm) -> Result<()>;
+    fn delete(&self, id: i64) -> Result<()>;
 }
 
-/// Run the picker. Draws in an inline viewport on stderr, so stdout stays clean for
-/// the selected command and the panel collapses back to your prompt on exit.
-pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
+/// Which surface the single viewport is showing. Editing and confirm-delete are
+/// modes of the same picker, not separate screens.
+enum Mode {
+    Picker,
+    Editing { form: FormState, id: i64 },
+    ConfirmDelete,
+}
+
+/// Whether the event loop should keep running or exit with a selection.
+enum Flow {
+    Continue,
+    Done(Option<CommandMemory>),
+}
+
+/// Run the picker over one persistent viewport. Draws on stderr so stdout stays
+/// clean for the selected command; returns the chosen memory, or `None` on cancel.
+pub fn run(store: &dyn PickerStore, memories: Vec<CommandMemory>) -> Result<Option<CommandMemory>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(18)?;
+    let mut app = App::new(memories);
 
-    let haystacks = search::build_haystacks(memories);
-    let mut query = LineEditor::default();
-    let mut results = filter(query.text(), memories, &haystacks);
-    let mut state = ListState::default();
-    state.select((!results.is_empty()).then_some(0));
-    let mut confirming = false;
+    let outcome = 'outer: loop {
+        terminal.draw(|f| app.render(f))?;
 
-    let outcome = loop {
-        terminal.draw(|f| render_picker(f, &query, &results, memories, &mut state, confirming))?;
+        // Block for one event, then apply any already-queued events before the next
+        // draw — a burst of keystrokes (or a slow SSH link) refilters once, not N times.
+        let mut event = event::read()?;
+        loop {
+            if let Flow::Done(selection) = app.handle_event(event, store)? {
+                break 'outer selection;
+            }
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+            event = event::read()?;
+        }
+        app.settle();
+    };
 
-        match event::read()? {
-            Event::Paste(text) if !confirming => {
-                query.insert_str(&text);
-                refilter(query.text(), memories, &haystacks, &mut results, &mut state);
+    terminal.clear()?;
+    Ok(outcome)
+}
+
+struct App {
+    memories: Vec<CommandMemory>,
+    haystacks: Vec<String>,
+    query: LineEditor,
+    results: Vec<usize>,
+    state: ListState,
+    mode: Mode,
+    dirty: bool,
+}
+
+impl App {
+    fn new(memories: Vec<CommandMemory>) -> Self {
+        let haystacks = search::build_haystacks(&memories);
+        let results: Vec<usize> = (0..memories.len()).collect();
+        let mut state = ListState::default();
+        state.select((!results.is_empty()).then_some(0));
+        Self {
+            memories,
+            haystacks,
+            query: LineEditor::default(),
+            results,
+            state,
+            mode: Mode::Picker,
+            dirty: false,
+        }
+    }
+
+    fn selected_memory(&self) -> Option<&CommandMemory> {
+        self.state
+            .selected()
+            .and_then(|i| self.results.get(i))
+            .map(|&i| &self.memories[i])
+    }
+
+    fn render(&mut self, f: &mut Frame) {
+        if let Mode::Editing { form, .. } = &self.mode {
+            render_form(f, form);
+            return;
+        }
+        let confirming = matches!(self.mode, Mode::ConfirmDelete);
+        render_picker(
+            f,
+            &self.query,
+            &self.results,
+            &self.memories,
+            &mut self.state,
+            confirming,
+        );
+    }
+
+    fn handle_event(&mut self, event: Event, store: &dyn PickerStore) -> Result<Flow> {
+        match self.mode {
+            Mode::Picker => self.handle_picker(event),
+            Mode::Editing { .. } => self.handle_editing(event, store),
+            Mode::ConfirmDelete => self.handle_confirm(event, store),
+        }
+    }
+
+    fn handle_picker(&mut self, event: Event) -> Result<Flow> {
+        match event {
+            Event::Paste(text) => {
+                self.query.insert_str(&text);
+                self.dirty = true;
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                let selected = state.selected().and_then(|i| results.get(i).copied());
-
-                if confirming {
-                    let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-                    if let Some(i) = selected.filter(|_| confirmed) {
-                        break Outcome::Delete(i);
-                    }
-                    confirming = false;
-                    continue;
-                }
-
-                // Selection and action keys take priority; anything else is text
-                // editing routed through the shared line editor.
                 match key.code {
-                    KeyCode::Esc => break Outcome::Cancel,
-                    KeyCode::Char('c') if ctrl => break Outcome::Cancel,
+                    KeyCode::Esc => return Ok(Flow::Done(None)),
+                    KeyCode::Char('c') if ctrl => return Ok(Flow::Done(None)),
                     KeyCode::Enter => {
-                        if let Some(i) = selected {
-                            break Outcome::Select(i);
+                        if let Some(m) = self.selected_memory() {
+                            return Ok(Flow::Done(Some(m.clone())));
                         }
                     }
-                    KeyCode::Char('o') if ctrl => {
-                        if let Some(i) = selected {
-                            break Outcome::Edit(i);
+                    KeyCode::Char('o') if ctrl => self.begin_edit(),
+                    KeyCode::Char('x') if ctrl => {
+                        if self.selected_memory().is_some() {
+                            self.mode = Mode::ConfirmDelete;
                         }
                     }
-                    KeyCode::Char('x') if ctrl => confirming = selected.is_some(),
-                    KeyCode::Up => move_selection(&mut state, results.len(), -1),
-                    KeyCode::Down => move_selection(&mut state, results.len(), 1),
+                    KeyCode::Up => move_selection(&mut self.state, self.results.len(), -1),
+                    KeyCode::Down => move_selection(&mut self.state, self.results.len(), 1),
                     _ => {
-                        if query.handle_key(key) == Handled::Edited {
-                            refilter(query.text(), memories, &haystacks, &mut results, &mut state);
+                        if self.query.handle_key(key) == Handled::Edited {
+                            self.dirty = true;
                         }
                     }
                 }
             }
             _ => {}
         }
-    };
+        Ok(Flow::Continue)
+    }
 
-    terminal.clear()?;
-    Ok(outcome)
+    fn handle_editing(&mut self, event: Event, store: &dyn PickerStore) -> Result<Flow> {
+        match event {
+            Event::Paste(text) => {
+                if let Mode::Editing { form, .. } = &mut self.mode {
+                    form.field().insert_str(&text);
+                }
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => self.mode = Mode::Picker,
+                    KeyCode::Char('c') if ctrl => self.mode = Mode::Picker,
+                    KeyCode::Enter => self.commit_edit(store)?,
+                    KeyCode::Tab | KeyCode::Down => {
+                        if let Mode::Editing { form, .. } = &mut self.mode {
+                            form.next();
+                        }
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        if let Mode::Editing { form, .. } = &mut self.mode {
+                            form.prev();
+                        }
+                    }
+                    _ => {
+                        if let Mode::Editing { form, .. } = &mut self.mode {
+                            form.field().handle_key(key);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn handle_confirm(&mut self, event: Event, store: &dyn PickerStore) -> Result<Flow> {
+        if let Event::Key(key) = event
+            && key.kind == KeyEventKind::Press
+        {
+            let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+            if confirmed && let Some(id) = self.selected_memory().map(|m| m.id) {
+                let pos = self.state.selected().unwrap_or(0);
+                store.delete(id)?;
+                self.reload(store)?;
+                self.select_near(pos);
+            }
+            self.mode = Mode::Picker;
+        }
+        Ok(Flow::Continue)
+    }
+
+    fn begin_edit(&mut self) {
+        if let Some(m) = self.selected_memory() {
+            let form = FormState::new(
+                &m.command,
+                m.description.as_deref().unwrap_or(""),
+                &m.tags.join(" "),
+            );
+            self.mode = Mode::Editing { form, id: m.id };
+        }
+    }
+
+    fn commit_edit(&mut self, store: &dyn PickerStore) -> Result<()> {
+        let taken = std::mem::replace(&mut self.mode, Mode::Picker);
+        let Mode::Editing { form, id } = taken else {
+            return Ok(());
+        };
+        if form.command_is_blank() {
+            self.mode = Mode::Editing { form, id };
+            return Ok(());
+        }
+        store.save_edit(id, form.into_add_form())?;
+        self.reload(store)?;
+        // Keep the just-edited row under the cursor even if it moved in the results.
+        let idx = self.results.iter().position(|&i| self.memories[i].id == id);
+        self.state
+            .select(idx.or_else(|| (!self.results.is_empty()).then_some(0)));
+        Ok(())
+    }
+
+    /// After the drained event batch, refilter once if the query changed.
+    fn settle(&mut self) {
+        if !self.dirty {
+            return;
+        }
+        self.dirty = false;
+        self.recompute_results();
+        reselect(&mut self.state, self.results.len());
+    }
+
+    fn reload(&mut self, store: &dyn PickerStore) -> Result<()> {
+        self.memories = store.reload()?;
+        self.haystacks = search::build_haystacks(&self.memories);
+        self.recompute_results();
+        Ok(())
+    }
+
+    fn recompute_results(&mut self) {
+        self.results = filter(self.query.text(), &self.memories, &self.haystacks);
+    }
+
+    /// Select the row at `pos`, clamped — the neighbor of a deleted row.
+    fn select_near(&mut self, pos: usize) {
+        let sel = (!self.results.is_empty()).then(|| pos.min(self.results.len() - 1));
+        self.state.select(sel);
+    }
 }
 
 fn filter(query: &str, memories: &[CommandMemory], haystacks: &[String]) -> Vec<usize> {
@@ -98,17 +278,6 @@ fn filter(query: &str, memories: &[CommandMemory], haystacks: &[String]) -> Vec<
         return (0..memories.len()).collect();
     }
     search::ranked_indices(query, memories, haystacks, 200)
-}
-
-fn refilter(
-    query: &str,
-    memories: &[CommandMemory],
-    haystacks: &[String],
-    results: &mut Vec<usize>,
-    state: &mut ListState,
-) {
-    *results = filter(query, memories, haystacks);
-    reselect(state, results.len());
 }
 
 fn reselect(state: &mut ListState, len: usize) {
@@ -191,7 +360,7 @@ fn render_picker(
     let help_text = if confirming {
         "delete this memory?  y / n"
     } else {
-        "↑/↓ move · enter print · ^e edit · ^x delete · esc cancel"
+        "↑/↓ move · enter print · ^o edit · ^x delete · esc cancel"
     };
     f.render_widget(Paragraph::new(help_text), help);
 }
@@ -203,7 +372,7 @@ fn preview_text(results: &[usize], memories: &[CommandMemory], selected: Option<
     let mut out = format!("{}\n\n", m.command);
     match m.description.as_deref().filter(|d| !d.is_empty()) {
         Some(desc) => out.push_str(&format!("{desc}\n\n")),
-        None => out.push_str("(no description yet — press ^e to add one)\n\n"),
+        None => out.push_str("(no description yet — press ^o to add one)\n\n"),
     }
     if !m.tags.is_empty() {
         out.push_str(&format!("tags: {}\n", m.tags.join(", ")));
@@ -503,6 +672,86 @@ mod tests {
             use_count: 0,
             last_used_at: None,
         }
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        ))
+    }
+
+    /// In-memory PickerStore for exercising the App state machine.
+    struct MockStore {
+        memories: std::cell::RefCell<Vec<CommandMemory>>,
+    }
+
+    impl PickerStore for MockStore {
+        fn reload(&self) -> Result<Vec<CommandMemory>> {
+            Ok(self.memories.borrow().clone())
+        }
+        fn save_edit(&self, id: i64, form: AddForm) -> Result<()> {
+            if let Some(m) = self.memories.borrow_mut().iter_mut().find(|m| m.id == id) {
+                m.command = form.command;
+                m.description = Some(form.description).filter(|d| !d.trim().is_empty());
+            }
+            Ok(())
+        }
+        fn delete(&self, id: i64) -> Result<()> {
+            self.memories.borrow_mut().retain(|m| m.id != id);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn typing_coalesces_and_narrows_on_settle() {
+        let memories = vec![
+            mem(1, "docker ps", Some("containers"), &["docker"]),
+            mem(2, "git status", Some("changes"), &["git"]),
+        ];
+        let mut app = App::new(memories);
+        for c in "git".chars() {
+            app.handle_picker(key(KeyCode::Char(c))).unwrap();
+        }
+        // Coalesced: results don't change until the drained batch settles.
+        assert_eq!(app.results.len(), 2);
+        app.settle();
+        assert_eq!(app.results.len(), 1);
+        assert_eq!(app.memories[app.results[0]].id, 2);
+    }
+
+    #[test]
+    fn edit_returns_to_the_picker_reselecting_by_id() {
+        let memories = vec![mem(1, "alpha", None, &[]), mem(2, "beta", None, &[])];
+        let store = MockStore {
+            memories: std::cell::RefCell::new(memories.clone()),
+        };
+        let mut app = App::new(memories);
+        app.state.select(Some(1));
+        app.begin_edit();
+        app.handle_event(key(KeyCode::Enter), &store).unwrap();
+        assert!(matches!(app.mode, Mode::Picker));
+        assert_eq!(app.selected_memory().map(|m| m.id), Some(2));
+    }
+
+    #[test]
+    fn delete_keeps_the_cursor_on_a_neighbor() {
+        let memories = vec![
+            mem(1, "a", None, &[]),
+            mem(2, "b", None, &[]),
+            mem(3, "c", None, &[]),
+        ];
+        let store = MockStore {
+            memories: std::cell::RefCell::new(memories.clone()),
+        };
+        let mut app = App::new(memories);
+        app.state.select(Some(1));
+        app.mode = Mode::ConfirmDelete;
+        app.handle_event(key(KeyCode::Char('y')), &store).unwrap();
+        assert!(matches!(app.mode, Mode::Picker));
+        assert_eq!(app.results.len(), 2);
+        // Was on index 1 ("b"); after deleting it the cursor holds index 1 ("c").
+        assert_eq!(app.selected_memory().map(|m| m.id), Some(3));
     }
 
     #[test]
