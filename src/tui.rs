@@ -9,7 +9,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
@@ -75,6 +75,11 @@ pub fn run(
     };
 
     terminal.clear()?;
+    // Apply the session's deletions now that the viewport is closing. Anything the
+    // user undid with Ctrl-Z was popped off `deleted` and is never touched.
+    for id in &app.deleted {
+        store.delete(*id)?;
+    }
     Ok(outcome)
 }
 
@@ -87,6 +92,11 @@ struct App {
     mode: Mode,
     dirty: bool,
     drafts_only: bool,
+    /// Ids marked for deletion — hidden from the view now, deleted from the store on
+    /// exit, so Ctrl-Z can restore them within the session.
+    deleted: Vec<i64>,
+    /// A transient footer message (e.g. the undo hint), cleared on the next key.
+    status: Option<String>,
     theme: Theme,
     now: i64,
 }
@@ -103,6 +113,8 @@ impl App {
             mode: Mode::Picker,
             dirty: false,
             drafts_only: false,
+            deleted: Vec::new(),
+            status: None,
             theme: Theme::detect(),
             now,
         };
@@ -132,6 +144,7 @@ impl App {
             &mut self.state,
             confirming,
             self.drafts_only,
+            self.status.as_deref(),
             &self.theme,
             self.now,
         );
@@ -141,7 +154,7 @@ impl App {
         match self.mode {
             Mode::Picker => self.handle_picker(event),
             Mode::Editing { .. } => self.handle_editing(event, store),
-            Mode::ConfirmDelete => self.handle_confirm(event, store),
+            Mode::ConfirmDelete => self.handle_confirm(event),
         }
     }
 
@@ -153,6 +166,7 @@ impl App {
             }
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                self.status = None; // any keystroke dismisses the transient toast
                 match key.code {
                     KeyCode::Esc => return Ok(Flow::Done(None)),
                     KeyCode::Char('c') if ctrl => return Ok(Flow::Done(None)),
@@ -181,6 +195,7 @@ impl App {
                         self.drafts_only = !self.drafts_only;
                         self.dirty = true;
                     }
+                    KeyCode::Char('z') if ctrl => self.undo_delete(),
                     _ => {
                         if self.query.handle_key(key) == Handled::Edited {
                             self.dirty = true;
@@ -234,20 +249,34 @@ impl App {
         Ok(Flow::Continue)
     }
 
-    fn handle_confirm(&mut self, event: Event, store: &dyn PickerStore) -> Result<Flow> {
+    fn handle_confirm(&mut self, event: Event) -> Result<Flow> {
         if let Event::Key(key) = event
             && key.kind == KeyEventKind::Press
         {
             let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-            if confirmed && let Some(id) = self.selected_memory().map(|m| m.id) {
+            if confirmed && let Some(m) = self.selected_memory() {
+                let (id, label) = (m.id, doomed_label(&m.command));
                 let pos = self.state.selected().unwrap_or(0);
-                store.delete(id)?;
-                self.reload(store)?;
+                // Hide it now; the store delete happens on exit, so Ctrl-Z can undo.
+                self.deleted.push(id);
+                self.recompute_results();
                 self.select_near(pos);
+                self.status = Some(format!("deleted {label} · ^z undo"));
             }
             self.mode = Mode::Picker;
         }
         Ok(Flow::Continue)
+    }
+
+    /// Restore the most recently deleted memory (Ctrl-Z), reselecting it by id.
+    fn undo_delete(&mut self) {
+        if let Some(id) = self.deleted.pop() {
+            self.recompute_results();
+            let idx = self.results.iter().position(|&i| self.memories[i].id == id);
+            self.state
+                .select(idx.or_else(|| (!self.results.is_empty()).then_some(0)));
+            self.status = Some("restored".to_string());
+        }
     }
 
     fn begin_edit(&mut self) {
@@ -305,6 +334,9 @@ impl App {
         };
         if self.drafts_only {
             results.retain(|&i| self.memories[i].is_draft());
+        }
+        if !self.deleted.is_empty() {
+            results.retain(|&i| !self.deleted.contains(&self.memories[i].id));
         }
         self.results = results;
     }
@@ -373,6 +405,7 @@ fn render_picker(
     state: &mut ListState,
     confirming: bool,
     drafts_only: bool,
+    status: Option<&str>,
     theme: &Theme,
     now: i64,
 ) {
@@ -405,6 +438,7 @@ fn render_picker(
             state,
             query.text(),
             drafts_only,
+            confirming,
             theme,
         );
         let preview = preview_text(
@@ -432,6 +466,7 @@ fn render_picker(
             state,
             query.text(),
             drafts_only,
+            confirming,
             theme,
         );
         render_detail_strip(f, strip, results, memories, state.selected(), theme, now);
@@ -444,12 +479,20 @@ fn render_picker(
             state,
             query.text(),
             drafts_only,
+            confirming,
             theme,
         );
     }
 
     let help_line = if confirming {
-        Line::styled("delete this memory?  y / n", theme.danger)
+        let name = state
+            .selected()
+            .and_then(|s| results.get(s))
+            .map(|&i| doomed_label(&memories[i].command))
+            .unwrap_or_default();
+        Line::styled(format!("delete {name}?  y / n"), theme.danger)
+    } else if let Some(status) = status {
+        Line::styled(status.to_string(), theme.accent)
     } else {
         Line::styled(footer_hint(area.width), theme.dim)
     };
@@ -475,6 +518,7 @@ fn render_list(
     state: &mut ListState,
     query: &str,
     drafts_only: bool,
+    confirming: bool,
     theme: &Theme,
 ) {
     // Reserve the interior minus the 2-cell highlight gutter for row text.
@@ -500,10 +544,16 @@ fn render_list(
             ));
         }
     }
+    // While confirming a delete, the selected row is the doomed one — paint it red.
+    let highlight = if confirming {
+        theme.danger.add_modifier(Modifier::REVERSED)
+    } else {
+        theme.selection
+    };
     let list = List::new(items)
         .block(Block::bordered().title(title))
         .highlight_symbol("▌ ")
-        .highlight_style(theme.selection);
+        .highlight_style(highlight);
     f.render_stateful_widget(list, area, state);
 }
 
@@ -642,6 +692,12 @@ fn split_command(command: &str) -> (&str, usize) {
         Some((first, rest)) => (first, rest.lines().count()),
         None => (command, 0),
     }
+}
+
+/// A short, quoted first-line label of a command, for the confirm and undo messages.
+fn doomed_label(command: &str) -> String {
+    let (first, _) = split_command(command);
+    format!("\"{}\"", truncate_str(first, 40))
 }
 
 /// Truncate a span run to `width` columns, appending `…` when it overflows. Trims
@@ -1137,6 +1193,31 @@ mod tests {
     }
 
     #[test]
+    fn delete_then_undo_restores_and_reselects() {
+        let memories = vec![
+            mem(1, "a", None, &[]),
+            mem(2, "b", None, &[]),
+            mem(3, "c", None, &[]),
+        ];
+        let mut app = App::new(memories, 0);
+        app.state.select(Some(1));
+        app.mode = Mode::ConfirmDelete;
+        app.handle_confirm(key(KeyCode::Char('y'))).unwrap();
+        assert_eq!(app.results.len(), 2);
+        assert!(app.deleted.contains(&2));
+        assert!(app.status.is_some());
+
+        let ctrl_z = Event::Key(ratatui::crossterm::event::KeyEvent::new(
+            KeyCode::Char('z'),
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_picker(ctrl_z).unwrap();
+        assert!(app.deleted.is_empty());
+        assert_eq!(app.results.len(), 3);
+        assert_eq!(app.selected_memory().map(|m| m.id), Some(2));
+    }
+
+    #[test]
     fn edit_returns_to_the_picker_reselecting_by_id() {
         let memories = vec![mem(1, "alpha", None, &[]), mem(2, "beta", None, &[])];
         let store = MockStore {
@@ -1238,7 +1319,7 @@ mod tests {
         terminal
             .draw(|f| {
                 render_picker(
-                    f, &query, &results, &memories, &mut state, false, false, &theme, 0,
+                    f, &query, &results, &memories, &mut state, false, false, None, &theme, 0,
                 )
             })
             .unwrap();
@@ -1267,7 +1348,7 @@ mod tests {
         terminal
             .draw(|f| {
                 render_picker(
-                    f, &query, &results, &memories, &mut state, false, false, &theme, 0,
+                    f, &query, &results, &memories, &mut state, false, false, None, &theme, 0,
                 )
             })
             .unwrap();
