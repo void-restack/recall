@@ -60,6 +60,14 @@ Then, right after a command you want to keep:
 recall add --last -d 'why this mattered' -t sometag
 ```
 
+For one-keystroke capture and recall, add `--keys` to bind **Alt+R** (insert a recalled command into your prompt) and **Alt+S** (save the command you just ran):
+
+```bash
+eval "$(recall init zsh --keys)"
+```
+
+The bindings are opt-in and cancel cleanly, leaving your current line untouched. Some terminals need Option/Alt configured as a Meta/Escape key for `Alt+`-combos to reach the shell.
+
 ## Principles
 
 - **Local-first and offline.** Everything lives in a single SQLite file on your machine (`~/.local/share/recall/` on Linux, `~/Library/Application Support/recall/` on macOS). No account, no network, no telemetry.
