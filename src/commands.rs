@@ -71,18 +71,17 @@ pub fn export() -> Result<()> {
 }
 
 fn print_row(m: &CommandMemory) {
-    let label = m
-        .description
-        .as_deref()
-        .filter(|d| !d.is_empty())
-        .unwrap_or(&m.command);
     let draft = if m.is_draft() { " *" } else { "" };
+    let desc = match m.description.as_deref().filter(|d| !d.is_empty()) {
+        Some(d) => format!("  — {d}"),
+        None => String::new(),
+    };
     let tags = if m.tags.is_empty() {
         String::new()
     } else {
         format!("  [{}]", m.tags.join(", "))
     };
-    println!("{:>4}{draft}  {label}{tags}", m.id);
+    println!("{:>4}{draft}  {}{desc}{tags}", m.id, m.command);
 }
 
 fn clean_description(raw: Option<String>) -> Option<String> {
