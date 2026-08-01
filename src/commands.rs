@@ -27,7 +27,7 @@ pub fn add(args: AddArgs) -> Result<()> {
 }
 
 fn add_via_form(initial: String, force: bool) -> Result<()> {
-    let Some(form) = crate::tui::add_form(&initial)? else {
+    let Some(form) = crate::tui::add_form(&initial, "", "")? else {
         eprintln!("cancelled");
         return Ok(());
     };
@@ -98,16 +98,39 @@ pub fn pick() -> Result<()> {
         anyhow::bail!("not a terminal — use `recall search <words>` instead");
     }
     let store = Store::open()?;
-    let memories = store.list()?;
-    if memories.is_empty() {
-        eprintln!("no memories yet — capture one with `recall add`");
+    // Reloads each pass so edits and deletes made in the picker show immediately.
+    loop {
+        let memories = store.list()?;
+        if memories.is_empty() {
+            eprintln!("no memories yet — capture one with `recall add`");
+            return Ok(());
+        }
+        match crate::tui::run(&memories)? {
+            crate::tui::Outcome::Select(i) => {
+                let chosen = &memories[i];
+                store.record_use(chosen.id, now_millis())?;
+                println!("{}", chosen.command);
+                return Ok(());
+            }
+            crate::tui::Outcome::Edit(i) => update_via_form(&store, memories[i].clone())?,
+            crate::tui::Outcome::Delete(i) => {
+                store.delete(memories[i].id)?;
+            }
+            crate::tui::Outcome::Cancel => return Ok(()),
+        }
+    }
+}
+
+fn update_via_form(store: &Store, mut memory: CommandMemory) -> Result<()> {
+    let description = memory.description.clone().unwrap_or_default();
+    let tags = memory.tags.join(" ");
+    let Some(form) = crate::tui::add_form(&memory.command, &description, &tags)? else {
         return Ok(());
-    }
-    if let Some(index) = crate::tui::run(&memories)? {
-        let chosen = &memories[index];
-        store.record_use(chosen.id, now_millis())?;
-        println!("{}", chosen.command);
-    }
+    };
+    memory.command = form.command;
+    memory.description = clean_description(Some(form.description));
+    memory.tags = memory::normalize_tags(split_tags(&form.tags));
+    store.update(&memory, now_millis())?;
     Ok(())
 }
 

@@ -11,14 +11,21 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
-use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 
 use crate::memory::CommandMemory;
 use crate::search;
 
-/// Run the picker. Returns the index of the chosen Memory, or `None` if cancelled.
-/// The UI draws on stderr so stdout stays clean for the selected command.
-pub fn run(memories: &[CommandMemory]) -> Result<Option<usize>> {
+/// What the user chose in the picker. Indices point into the `memories` slice.
+pub enum Outcome {
+    Select(usize),
+    Edit(usize),
+    Delete(usize),
+    Cancel,
+}
+
+/// Run the picker. Draws on stderr so stdout stays clean for the selected command.
+pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
 
@@ -26,9 +33,10 @@ pub fn run(memories: &[CommandMemory]) -> Result<Option<usize>> {
     let mut results = filter(&query, memories);
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
+    let mut confirming = false;
 
     loop {
-        terminal.draw(|f| render(f, &query, &results, memories, &mut state))?;
+        terminal.draw(|f| render_picker(f, &query, &results, memories, &mut state, confirming))?;
 
         let Event::Key(key) = event::read()? else {
             continue;
@@ -37,17 +45,38 @@ pub fn run(memories: &[CommandMemory]) -> Result<Option<usize>> {
             continue;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let selected = state.selected().and_then(|i| results.get(i).copied());
+
+        if confirming {
+            let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+            if let Some(i) = selected.filter(|_| confirmed) {
+                return Ok(Outcome::Delete(i));
+            }
+            confirming = false;
+            continue;
+        }
+
         match key.code {
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Char('c') if ctrl => return Ok(None),
-            KeyCode::Enter => return Ok(state.selected().and_then(|i| results.get(i).copied())),
+            KeyCode::Esc => return Ok(Outcome::Cancel),
+            KeyCode::Char('c') if ctrl => return Ok(Outcome::Cancel),
+            KeyCode::Enter => {
+                if let Some(i) = selected {
+                    return Ok(Outcome::Select(i));
+                }
+            }
+            KeyCode::Char('e') if ctrl => {
+                if let Some(i) = selected {
+                    return Ok(Outcome::Edit(i));
+                }
+            }
+            KeyCode::Char('x') if ctrl => confirming = selected.is_some(),
             KeyCode::Up => move_selection(&mut state, results.len(), -1),
             KeyCode::Down => move_selection(&mut state, results.len(), 1),
             KeyCode::Backspace => {
                 query.pop();
                 refilter(&query, memories, &mut results, &mut state);
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if !ctrl => {
                 query.push(c);
                 refilter(&query, memories, &mut results, &mut state);
             }
@@ -85,18 +114,32 @@ fn move_selection(state: &mut ListState, len: usize, delta: isize) {
     state.select(Some(next));
 }
 
-fn render(
+fn render_picker(
     f: &mut Frame,
     query: &str,
     results: &[usize],
     memories: &[CommandMemory],
     state: &mut ListState,
+    confirming: bool,
 ) {
-    let [top, bottom] = Layout::vertical([Constraint::Length(3), Constraint::Min(1)]).areas(f.area());
+    let [top, middle, help] =
+        Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
+            .areas(f.area());
+    f.render_widget(
+        Paragraph::new(format!("search: {query}")).block(Block::bordered().title("recall")),
+        top,
+    );
 
-    let header = Paragraph::new(format!("search: {query}"))
-        .block(Block::bordered().title("recall — ↑/↓ move · enter print · esc cancel"));
-    f.render_widget(header, top);
+    let [list_area, preview_area] =
+        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
+
+    let preview = preview_text(results, memories, state.selected());
+    f.render_widget(
+        Paragraph::new(preview)
+            .block(Block::bordered().title("details"))
+            .wrap(Wrap { trim: false }),
+        preview_area,
+    );
 
     let items: Vec<ListItem> = results.iter().map(|&i| ListItem::new(row_line(&memories[i]))).collect();
     let title = format!("{} match{}", results.len(), if results.len() == 1 { "" } else { "es" });
@@ -104,7 +147,34 @@ fn render(
         .block(Block::bordered().title(title))
         .highlight_symbol("▌ ")
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
-    f.render_stateful_widget(list, bottom, state);
+    f.render_stateful_widget(list, list_area, state);
+
+    let help_text = if confirming {
+        "delete this memory?  y / n"
+    } else {
+        "↑/↓ move · enter print · ^e edit · ^x delete · esc cancel"
+    };
+    f.render_widget(Paragraph::new(help_text), help);
+}
+
+fn preview_text(results: &[usize], memories: &[CommandMemory], selected: Option<usize>) -> String {
+    let Some(m) = selected.and_then(|s| results.get(s)).map(|&i| &memories[i]) else {
+        return String::new();
+    };
+    let mut out = format!("{}\n\n", m.command);
+    match m.description.as_deref().filter(|d| !d.is_empty()) {
+        Some(desc) => out.push_str(&format!("{desc}\n\n")),
+        None => out.push_str("(no description yet — press ^e to add one)\n\n"),
+    }
+    if !m.tags.is_empty() {
+        out.push_str(&format!("tags: {}\n", m.tags.join(", ")));
+    }
+    out.push_str(&format!(
+        "used {} time{}",
+        m.use_count,
+        if m.use_count == 1 { "" } else { "s" }
+    ));
+    out
 }
 
 fn row_line(m: &CommandMemory) -> String {
@@ -119,37 +189,19 @@ fn row_line(m: &CommandMemory) -> String {
     line
 }
 
-/// Restores cooked mode and the main screen on drop — including during a panic.
-struct TerminalGuard;
-
-impl TerminalGuard {
-    fn enter() -> Result<Self> {
-        enable_raw_mode()?;
-        execute!(io::stderr(), EnterAlternateScreen)?;
-        Ok(Self)
-    }
-}
-
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stderr(), LeaveAlternateScreen);
-    }
-}
-
-/// What the add form collected. Tags are raw text, split and normalized by the caller.
+/// What the add/edit form collected. Tags are raw text, split and normalized by the caller.
 pub struct AddForm {
     pub command: String,
     pub description: String,
     pub tags: String,
 }
 
-/// Interactive capture: fill in command / description / tags. Returns `None` if
-/// cancelled. Draws on stderr, like the picker.
-pub fn add_form(initial_command: &str) -> Result<Option<AddForm>> {
+/// Interactive capture/edit form, pre-filled with the given values. Returns `None`
+/// if cancelled. Draws on stderr, like the picker.
+pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<AddForm>> {
     let _guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
-    let mut form = FormState::new(initial_command);
+    let mut form = FormState::new(command, description, tags);
 
     loop {
         terminal.draw(|f| render_form(f, &form))?;
@@ -170,7 +222,7 @@ pub fn add_form(initial_command: &str) -> Result<Option<AddForm>> {
             KeyCode::Tab | KeyCode::Down => form.next(),
             KeyCode::BackTab | KeyCode::Up => form.prev(),
             KeyCode::Backspace => form.backspace(),
-            KeyCode::Char(c) => form.insert(c),
+            KeyCode::Char(c) if !ctrl => form.insert(c),
             _ => {}
         }
     }
@@ -184,11 +236,11 @@ struct FormState {
 }
 
 impl FormState {
-    fn new(command: &str) -> Self {
+    fn new(command: &str, description: &str, tags: &str) -> Self {
         Self {
             command: command.to_string(),
-            description: String::new(),
-            tags: String::new(),
+            description: description.to_string(),
+            tags: tags.to_string(),
             focus: 0,
         }
     }
@@ -251,6 +303,24 @@ fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
     Paragraph::new(format!("{value}{cursor}")).block(Block::bordered().title(label).border_style(border))
 }
 
+/// Restores cooked mode and the main screen on drop — including during a panic.
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode()?;
+        execute!(io::stderr(), EnterAlternateScreen)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stderr(), LeaveAlternateScreen);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,8 +351,6 @@ mod tests {
             mem(1, "docker ps", Some("list containers"), &["docker"]),
             mem(2, "git stash", Some("shelve changes"), &["git"]),
         ];
-        // "git stash" (index 1) is the strong match and must come first; fuzzy
-        // matching may still include weaker rows below it.
         assert_eq!(filter("stash", &memories).first(), Some(&1));
     }
 
@@ -297,15 +365,24 @@ mod tests {
     }
 
     #[test]
-    fn renders_query_and_a_result_row() {
+    fn preview_shows_the_description_and_usage() {
+        let memories = vec![mem(1, "docker ps", Some("list running containers"), &["docker"])];
+        let text = preview_text(&[0], &memories, Some(0));
+        assert!(text.contains("docker ps"));
+        assert!(text.contains("list running containers"));
+        assert!(text.contains("used 0 times"));
+    }
+
+    #[test]
+    fn renders_query_list_and_preview() {
         let memories = vec![mem(1, "docker ps", Some("list running containers"), &["docker"])];
         let results = vec![0usize];
         let mut state = ListState::default();
         state.select(Some(0));
 
-        let mut terminal = Terminal::new(TestBackend::new(70, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
         terminal
-            .draw(|f| render(f, "docker", &results, &memories, &mut state))
+            .draw(|f| render_picker(f, "docker", &results, &memories, &mut state, false))
             .unwrap();
 
         let text: String = terminal
@@ -316,12 +393,13 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("search: docker"), "header missing:\n{text}");
-        assert!(text.contains("docker ps"), "result row missing:\n{text}");
+        assert!(text.contains("docker ps"), "row/preview missing:\n{text}");
+        assert!(text.contains("details"), "preview pane missing:\n{text}");
     }
 
     #[test]
     fn form_edits_the_focused_field_and_cycles() {
-        let mut s = FormState::new("docker ps");
+        let mut s = FormState::new("docker ps", "", "");
         s.next();
         s.insert('h');
         s.insert('i');
@@ -335,8 +413,8 @@ mod tests {
     }
 
     #[test]
-    fn form_renders_its_fields_and_initial_command() {
-        let s = FormState::new("docker ps");
+    fn form_prefills_all_fields() {
+        let s = FormState::new("docker ps", "list containers", "docker cleanup");
         let mut terminal = Terminal::new(TestBackend::new(70, 12)).unwrap();
         terminal.draw(|f| render_form(f, &s)).unwrap();
         let text: String = terminal
@@ -346,8 +424,8 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect();
-        assert!(text.contains("docker ps"), "command missing:\n{text}");
-        assert!(text.contains("command"));
-        assert!(text.contains("tags"));
+        assert!(text.contains("docker ps"));
+        assert!(text.contains("list containers"));
+        assert!(text.contains("docker cleanup"));
     }
 }
