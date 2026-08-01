@@ -1,6 +1,7 @@
 mod cli;
 mod commands;
 mod history;
+mod line_editor;
 mod memory;
 mod paths;
 mod search;

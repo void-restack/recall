@@ -2,13 +2,17 @@ use std::io;
 
 use anyhow::Result;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
+use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
+use crate::line_editor::{Handled, LineEditor};
 use crate::memory::CommandMemory;
 use crate::search;
 
@@ -29,8 +33,8 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     let mut terminal = inline_terminal(18)?;
 
     let haystacks = search::build_haystacks(memories);
-    let mut query = String::new();
-    let mut results = filter(&query, memories, &haystacks);
+    let mut query = LineEditor::default();
+    let mut results = filter(query.text(), memories, &haystacks);
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
     let mut confirming = false;
@@ -38,47 +42,48 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     let outcome = loop {
         terminal.draw(|f| render_picker(f, &query, &results, memories, &mut state, confirming))?;
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let selected = state.selected().and_then(|i| results.get(i).copied());
+        match event::read()? {
+            Event::Paste(text) if !confirming => {
+                query.insert_str(&text);
+                refilter(query.text(), memories, &haystacks, &mut results, &mut state);
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                let selected = state.selected().and_then(|i| results.get(i).copied());
 
-        if confirming {
-            let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
-            if let Some(i) = selected.filter(|_| confirmed) {
-                break Outcome::Delete(i);
-            }
-            confirming = false;
-            continue;
-        }
+                if confirming {
+                    let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
+                    if let Some(i) = selected.filter(|_| confirmed) {
+                        break Outcome::Delete(i);
+                    }
+                    confirming = false;
+                    continue;
+                }
 
-        match key.code {
-            KeyCode::Esc => break Outcome::Cancel,
-            KeyCode::Char('c') if ctrl => break Outcome::Cancel,
-            KeyCode::Enter => {
-                if let Some(i) = selected {
-                    break Outcome::Select(i);
+                // Selection and action keys take priority; anything else is text
+                // editing routed through the shared line editor.
+                match key.code {
+                    KeyCode::Esc => break Outcome::Cancel,
+                    KeyCode::Char('c') if ctrl => break Outcome::Cancel,
+                    KeyCode::Enter => {
+                        if let Some(i) = selected {
+                            break Outcome::Select(i);
+                        }
+                    }
+                    KeyCode::Char('o') if ctrl => {
+                        if let Some(i) = selected {
+                            break Outcome::Edit(i);
+                        }
+                    }
+                    KeyCode::Char('x') if ctrl => confirming = selected.is_some(),
+                    KeyCode::Up => move_selection(&mut state, results.len(), -1),
+                    KeyCode::Down => move_selection(&mut state, results.len(), 1),
+                    _ => {
+                        if query.handle_key(key) == Handled::Edited {
+                            refilter(query.text(), memories, &haystacks, &mut results, &mut state);
+                        }
+                    }
                 }
-            }
-            KeyCode::Char('e') if ctrl => {
-                if let Some(i) = selected {
-                    break Outcome::Edit(i);
-                }
-            }
-            KeyCode::Char('x') if ctrl => confirming = selected.is_some(),
-            KeyCode::Up => move_selection(&mut state, results.len(), -1),
-            KeyCode::Down => move_selection(&mut state, results.len(), 1),
-            KeyCode::Backspace => {
-                query.pop();
-                refilter(&query, memories, &haystacks, &mut results, &mut state);
-            }
-            KeyCode::Char(c) if !ctrl => {
-                query.push(c);
-                refilter(&query, memories, &haystacks, &mut results, &mut state);
             }
             _ => {}
         }
@@ -124,9 +129,20 @@ fn move_selection(state: &mut ListState, len: usize, delta: isize) {
     state.select(Some(next));
 }
 
+/// Place the terminal caret at `col` inside a bordered single-line box, so the
+/// active line editor shows a real, native cursor. Clamped to the box interior.
+fn set_line_cursor(f: &mut Frame, area: Rect, col: usize) {
+    let inner = Block::bordered().inner(area);
+    if inner.width == 0 {
+        return;
+    }
+    let x = (inner.x + col as u16).min(inner.right().saturating_sub(1));
+    f.set_cursor_position(Position { x, y: inner.y });
+}
+
 fn render_picker(
     f: &mut Frame,
-    query: &str,
+    query: &LineEditor,
     results: &[usize],
     memories: &[CommandMemory],
     state: &mut ListState,
@@ -138,10 +154,13 @@ fn render_picker(
         Constraint::Length(1),
     ])
     .areas(f.area());
+    let prompt = "search: ";
     f.render_widget(
-        Paragraph::new(format!("search: {query}")).block(Block::bordered().title("recall")),
+        Paragraph::new(format!("{prompt}{}", query.text()))
+            .block(Block::bordered().title("recall")),
         top,
     );
+    set_line_cursor(f, top, prompt.chars().count() + query.cursor_col());
 
     let [list_area, preview_area] =
         Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(middle);
@@ -215,7 +234,7 @@ pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
     let _guard = RawGuard::enter()?;
     let mut terminal = inline_terminal(18)?;
 
-    let mut query = String::new();
+    let mut query = LineEditor::default();
     let mut results: Vec<usize> = (0..entries.len()).collect();
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
@@ -223,28 +242,27 @@ pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
     let result = loop {
         terminal.draw(|f| render_history(f, &query, &results, entries, &mut state))?;
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Esc => break None,
-            KeyCode::Char('c') if ctrl => break None,
-            KeyCode::Enter => break state.selected().and_then(|i| results.get(i).copied()),
-            KeyCode::Up => move_selection(&mut state, results.len(), -1),
-            KeyCode::Down => move_selection(&mut state, results.len(), 1),
-            KeyCode::Backspace => {
-                query.pop();
-                results = filter_history(&query, entries);
+        match event::read()? {
+            Event::Paste(text) => {
+                query.insert_str(&text);
+                results = filter_history(query.text(), entries);
                 reselect(&mut state, results.len());
             }
-            KeyCode::Char(c) if !ctrl => {
-                query.push(c);
-                results = filter_history(&query, entries);
-                reselect(&mut state, results.len());
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => break None,
+                    KeyCode::Char('c') if ctrl => break None,
+                    KeyCode::Enter => break state.selected().and_then(|i| results.get(i).copied()),
+                    KeyCode::Up => move_selection(&mut state, results.len(), -1),
+                    KeyCode::Down => move_selection(&mut state, results.len(), 1),
+                    _ => {
+                        if query.handle_key(key) == Handled::Edited {
+                            results = filter_history(query.text(), entries);
+                            reselect(&mut state, results.len());
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -263,7 +281,7 @@ fn filter_history(query: &str, entries: &[String]) -> Vec<usize> {
 
 fn render_history(
     f: &mut Frame,
-    query: &str,
+    query: &LineEditor,
     results: &[usize],
     entries: &[String],
     state: &mut ListState,
@@ -274,11 +292,13 @@ fn render_history(
         Constraint::Length(1),
     ])
     .areas(f.area());
+    let prompt = "history: ";
     f.render_widget(
-        Paragraph::new(format!("history: {query}"))
+        Paragraph::new(format!("{prompt}{}", query.text()))
             .block(Block::bordered().title("promote a command into a memory")),
         top,
     );
+    set_line_cursor(f, top, prompt.chars().count() + query.cursor_col());
 
     let items: Vec<ListItem> = results
         .iter()
@@ -313,21 +333,21 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
     let result = loop {
         terminal.draw(|f| render_form(f, &form))?;
 
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        match key.code {
-            KeyCode::Esc => break None,
-            KeyCode::Char('c') if ctrl => break None,
-            KeyCode::Enter if !form.command.trim().is_empty() => break Some(form.into_add_form()),
-            KeyCode::Tab | KeyCode::Down => form.next(),
-            KeyCode::BackTab | KeyCode::Up => form.prev(),
-            KeyCode::Backspace => form.backspace(),
-            KeyCode::Char(c) if !ctrl => form.insert(c),
+        match event::read()? {
+            Event::Paste(text) => form.field().insert_str(&text),
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                match key.code {
+                    KeyCode::Esc => break None,
+                    KeyCode::Char('c') if ctrl => break None,
+                    KeyCode::Enter if !form.command_is_blank() => break Some(form.into_add_form()),
+                    KeyCode::Tab | KeyCode::Down => form.next(),
+                    KeyCode::BackTab | KeyCode::Up => form.prev(),
+                    _ => {
+                        form.field().handle_key(key);
+                    }
+                }
+            }
             _ => {}
         }
     };
@@ -337,36 +357,28 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
 }
 
 struct FormState {
-    command: String,
-    description: String,
-    tags: String,
+    command: LineEditor,
+    description: LineEditor,
+    tags: LineEditor,
     focus: usize,
 }
 
 impl FormState {
     fn new(command: &str, description: &str, tags: &str) -> Self {
         Self {
-            command: command.to_string(),
-            description: description.to_string(),
-            tags: tags.to_string(),
+            command: LineEditor::new(command),
+            description: LineEditor::new(description),
+            tags: LineEditor::new(tags),
             focus: 0,
         }
     }
 
-    fn field(&mut self) -> &mut String {
+    fn field(&mut self) -> &mut LineEditor {
         match self.focus {
             0 => &mut self.command,
             1 => &mut self.description,
             _ => &mut self.tags,
         }
-    }
-
-    fn insert(&mut self, c: char) {
-        self.field().push(c);
-    }
-
-    fn backspace(&mut self) {
-        self.field().pop();
     }
 
     fn next(&mut self) {
@@ -377,11 +389,15 @@ impl FormState {
         self.focus = (self.focus + 2) % 3;
     }
 
+    fn command_is_blank(&self) -> bool {
+        self.command.text().trim().is_empty()
+    }
+
     fn into_add_form(self) -> AddForm {
         AddForm {
-            command: self.command.trim().to_string(),
-            description: self.description,
-            tags: self.tags,
+            command: self.command.into_text().trim().to_string(),
+            description: self.description.into_text(),
+            tags: self.tags.into_text(),
         }
     }
 }
@@ -395,31 +411,44 @@ fn render_form(f: &mut Frame, form: &FormState) {
     ])
     .areas(f.area());
 
-    f.render_widget(field(&form.command, "command", form.focus == 0), command);
     f.render_widget(
-        field(&form.description, "why (description)", form.focus == 1),
+        field(form.command.text(), "command", form.focus == 0),
+        command,
+    );
+    f.render_widget(
+        field(
+            form.description.text(),
+            "why (description)",
+            form.focus == 1,
+        ),
         description,
     );
     f.render_widget(
         field(
-            &form.tags,
+            form.tags.text(),
             "tags (space or comma separated)",
             form.focus == 2,
         ),
         tags,
     );
+
+    let (focused_area, focused) = match form.focus {
+        0 => (command, &form.command),
+        1 => (description, &form.description),
+        _ => (tags, &form.tags),
+    };
+    set_line_cursor(f, focused_area, focused.cursor_col());
+
     f.render_widget(Paragraph::new("tab move · enter save · esc cancel"), help);
 }
 
 fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
-    let cursor = if focused { "▊" } else { "" };
     let border = if focused {
         Style::new().add_modifier(Modifier::BOLD)
     } else {
         Style::new()
     };
-    Paragraph::new(format!("{value}{cursor}"))
-        .block(Block::bordered().title(label).border_style(border))
+    Paragraph::new(value).block(Block::bordered().title(label).border_style(border))
 }
 
 /// An inline viewport anchored under the prompt (fzf-style), sized to fit but never
@@ -436,19 +465,24 @@ fn inline_terminal(desired_rows: u16) -> Result<Term> {
     Ok(terminal)
 }
 
-/// Enables raw mode and restores it on drop — including during a panic. No alternate
-/// screen: the inline viewport keeps your scrollback visible above it.
+/// Enables raw mode and bracketed paste, restoring both on drop — including during
+/// a panic. No alternate screen: the inline viewport keeps your scrollback visible
+/// above it.
 struct RawGuard;
 
 impl RawGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
+        // Bracketed paste lets a multi-word paste arrive as one Event::Paste instead
+        // of a burst of keystrokes. Independent of the keyboard-enhancement flags.
+        execute!(io::stderr(), EnableBracketedPaste)?;
         Ok(Self)
     }
 }
 
 impl Drop for RawGuard {
     fn drop(&mut self) {
+        let _ = execute!(io::stderr(), DisableBracketedPaste);
         let _ = disable_raw_mode();
     }
 }
@@ -527,9 +561,10 @@ mod tests {
         let mut state = ListState::default();
         state.select(Some(0));
 
+        let query = LineEditor::new("docker");
         let mut terminal = Terminal::new(TestBackend::new(90, 12)).unwrap();
         terminal
-            .draw(|f| render_picker(f, "docker", &results, &memories, &mut state, false))
+            .draw(|f| render_picker(f, &query, &results, &memories, &mut state, false))
             .unwrap();
 
         let text: String = terminal
@@ -548,15 +583,14 @@ mod tests {
     fn form_edits_the_focused_field_and_cycles() {
         let mut s = FormState::new("docker ps", "", "");
         s.next();
-        s.insert('h');
-        s.insert('i');
-        assert_eq!(s.description, "hi");
+        s.field().insert('h');
+        s.field().insert('i');
+        assert_eq!(s.description.text(), "hi");
         s.prev();
-        s.backspace();
-        assert_eq!(s.command, "docker p");
+        assert_eq!(s.command.text(), "docker ps");
         s.prev();
-        s.insert('x');
-        assert_eq!(s.tags, "x");
+        s.field().insert('x');
+        assert_eq!(s.tags.text(), "x");
     }
 
     #[test]
