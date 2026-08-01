@@ -25,6 +25,7 @@ cargo install --path .
 ## Use
 
 ```text
+recall                                      Open the interactive picker (type to filter, Enter prints)
 recall add <cmd> [-d <desc>] [-t <tag> …]   Save a command (a Draft if you skip -d)
 recall add --last [-d <desc>] [-t <tag> …]  Save the previous command (needs the shell hook)
 recall search <words…>                      Fuzzy, typo-tolerant search by intent
@@ -64,7 +65,7 @@ recall add --last -d 'why this mattered' -t sometag
 
 ## Status
 
-Early but usable: the capture → search → reuse loop works today. Still to come: an interactive picker, usage-based ranking, secret warnings, and JSONL import. Not yet published to a package manager.
+Usable today: the full capture → search → reuse loop, including an interactive picker. Still to come: usage-based ranking, secret warnings on capture, and JSONL import. Not yet published to a package manager.
 
 ## License
 

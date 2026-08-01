@@ -3,8 +3,9 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 #[derive(Parser)]
 #[command(name = "recall", version, about = "Local-first command memory for your terminal")]
 pub struct Cli {
+    /// With no subcommand, `recall` opens the interactive picker.
     #[command(subcommand)]
-    pub command: Command,
+    pub command: Option<Command>,
 }
 
 #[derive(Subcommand)]

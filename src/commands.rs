@@ -60,6 +60,25 @@ pub fn init(args: InitArgs) -> Result<()> {
     Ok(())
 }
 
+pub fn pick() -> Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stderr().is_terminal() {
+        anyhow::bail!("not a terminal — use `recall search <words>` instead");
+    }
+    let store = Store::open()?;
+    let memories = store.list()?;
+    if memories.is_empty() {
+        eprintln!("no memories yet — capture one with `recall add`");
+        return Ok(());
+    }
+    if let Some(index) = crate::tui::run(&memories)? {
+        let chosen = &memories[index];
+        store.record_use(chosen.id)?;
+        println!("{}", chosen.command);
+    }
+    Ok(())
+}
+
 pub fn list() -> Result<()> {
     let store = Store::open()?;
     let memories = store.list()?;
