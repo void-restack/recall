@@ -1,20 +1,18 @@
 use std::io;
 
 use anyhow::Result;
-use ratatui::Frame;
-use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
-};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode, size};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::{Frame, Terminal, TerminalOptions, Viewport};
 
 use crate::memory::CommandMemory;
 use crate::search;
+
+type Term = Terminal<CrosstermBackend<io::Stderr>>;
 
 /// What the user chose in the picker. Indices point into the `memories` slice.
 pub enum Outcome {
@@ -24,10 +22,11 @@ pub enum Outcome {
     Cancel,
 }
 
-/// Run the picker. Draws on stderr so stdout stays clean for the selected command.
+/// Run the picker. Draws in an inline viewport on stderr, so stdout stays clean for
+/// the selected command and the panel collapses back to your prompt on exit.
 pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
-    let _guard = TerminalGuard::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let _guard = RawGuard::enter()?;
+    let mut terminal = inline_terminal(18)?;
 
     let mut query = String::new();
     let mut results = filter(&query, memories);
@@ -35,7 +34,7 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
     state.select((!results.is_empty()).then_some(0));
     let mut confirming = false;
 
-    loop {
+    let outcome = loop {
         terminal.draw(|f| render_picker(f, &query, &results, memories, &mut state, confirming))?;
 
         let Event::Key(key) = event::read()? else {
@@ -50,23 +49,23 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
         if confirming {
             let confirmed = matches!(key.code, KeyCode::Char('y') | KeyCode::Char('Y'));
             if let Some(i) = selected.filter(|_| confirmed) {
-                return Ok(Outcome::Delete(i));
+                break Outcome::Delete(i);
             }
             confirming = false;
             continue;
         }
 
         match key.code {
-            KeyCode::Esc => return Ok(Outcome::Cancel),
-            KeyCode::Char('c') if ctrl => return Ok(Outcome::Cancel),
+            KeyCode::Esc => break Outcome::Cancel,
+            KeyCode::Char('c') if ctrl => break Outcome::Cancel,
             KeyCode::Enter => {
                 if let Some(i) = selected {
-                    return Ok(Outcome::Select(i));
+                    break Outcome::Select(i);
                 }
             }
             KeyCode::Char('e') if ctrl => {
                 if let Some(i) = selected {
-                    return Ok(Outcome::Edit(i));
+                    break Outcome::Edit(i);
                 }
             }
             KeyCode::Char('x') if ctrl => confirming = selected.is_some(),
@@ -82,7 +81,10 @@ pub fn run(memories: &[CommandMemory]) -> Result<Outcome> {
             }
             _ => {}
         }
-    }
+    };
+
+    terminal.clear()?;
+    Ok(outcome)
 }
 
 fn filter(query: &str, memories: &[CommandMemory]) -> Vec<usize> {
@@ -102,10 +104,14 @@ fn refilter(
     state: &mut ListState,
 ) {
     *results = filter(query, memories);
-    let selected = if results.is_empty() {
+    reselect(state, results.len());
+}
+
+fn reselect(state: &mut ListState, len: usize) {
+    let selected = if len == 0 {
         None
     } else {
-        Some(state.selected().unwrap_or(0).min(results.len() - 1))
+        Some(state.selected().unwrap_or(0).min(len - 1))
     };
     state.select(selected);
 }
@@ -207,15 +213,15 @@ fn row_line(m: &CommandMemory) -> String {
 /// Browse shell history and pick a command to promote. Returns the chosen index,
 /// or `None` if cancelled.
 pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
-    let _guard = TerminalGuard::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let _guard = RawGuard::enter()?;
+    let mut terminal = inline_terminal(18)?;
 
     let mut query = String::new();
     let mut results: Vec<usize> = (0..entries.len()).collect();
     let mut state = ListState::default();
     state.select((!results.is_empty()).then_some(0));
 
-    loop {
+    let result = loop {
         terminal.draw(|f| render_history(f, &query, &results, entries, &mut state))?;
 
         let Event::Key(key) = event::read()? else {
@@ -226,9 +232,9 @@ pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Char('c') if ctrl => return Ok(None),
-            KeyCode::Enter => return Ok(state.selected().and_then(|i| results.get(i).copied())),
+            KeyCode::Esc => break None,
+            KeyCode::Char('c') if ctrl => break None,
+            KeyCode::Enter => break state.selected().and_then(|i| results.get(i).copied()),
             KeyCode::Up => move_selection(&mut state, results.len(), -1),
             KeyCode::Down => move_selection(&mut state, results.len(), 1),
             KeyCode::Backspace => {
@@ -243,7 +249,10 @@ pub fn history_picker(entries: &[String]) -> Result<Option<usize>> {
             }
             _ => {}
         }
-    }
+    };
+
+    terminal.clear()?;
+    Ok(result)
 }
 
 fn filter_history(query: &str, entries: &[String]) -> Vec<usize> {
@@ -251,15 +260,6 @@ fn filter_history(query: &str, entries: &[String]) -> Vec<usize> {
         return (0..entries.len()).collect();
     }
     search::rank_lines(query, entries, 500)
-}
-
-fn reselect(state: &mut ListState, len: usize) {
-    let selected = if len == 0 {
-        None
-    } else {
-        Some(state.selected().unwrap_or(0).min(len - 1))
-    };
-    state.select(selected);
 }
 
 fn render_history(
@@ -305,13 +305,13 @@ pub struct AddForm {
 }
 
 /// Interactive capture/edit form, pre-filled with the given values. Returns `None`
-/// if cancelled. Draws on stderr, like the picker.
+/// if cancelled. Draws in an inline viewport on stderr, like the picker.
 pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<AddForm>> {
-    let _guard = TerminalGuard::enter()?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(io::stderr()))?;
+    let _guard = RawGuard::enter()?;
+    let mut terminal = inline_terminal(14)?;
     let mut form = FormState::new(command, description, tags);
 
-    loop {
+    let result = loop {
         terminal.draw(|f| render_form(f, &form))?;
 
         let Event::Key(key) = event::read()? else {
@@ -322,18 +322,19 @@ pub fn add_form(command: &str, description: &str, tags: &str) -> Result<Option<A
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Esc => return Ok(None),
-            KeyCode::Char('c') if ctrl => return Ok(None),
-            KeyCode::Enter if !form.command.trim().is_empty() => {
-                return Ok(Some(form.into_add_form()));
-            }
+            KeyCode::Esc => break None,
+            KeyCode::Char('c') if ctrl => break None,
+            KeyCode::Enter if !form.command.trim().is_empty() => break Some(form.into_add_form()),
             KeyCode::Tab | KeyCode::Down => form.next(),
             KeyCode::BackTab | KeyCode::Up => form.prev(),
             KeyCode::Backspace => form.backspace(),
             KeyCode::Char(c) if !ctrl => form.insert(c),
             _ => {}
         }
-    }
+    };
+
+    terminal.clear()?;
+    Ok(result)
 }
 
 struct FormState {
@@ -422,21 +423,34 @@ fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
         .block(Block::bordered().title(label).border_style(border))
 }
 
-/// Restores cooked mode and the main screen on drop — including during a panic.
-struct TerminalGuard;
+/// An inline viewport anchored under the prompt (fzf-style), sized to fit but never
+/// taller than the terminal. On stderr so stdout stays free for the selection.
+fn inline_terminal(desired_rows: u16) -> Result<Term> {
+    let rows = size().map(|(_, r)| r).unwrap_or(24);
+    let height = desired_rows.min(rows.saturating_sub(1)).max(3);
+    let terminal = Terminal::with_options(
+        CrosstermBackend::new(io::stderr()),
+        TerminalOptions {
+            viewport: Viewport::Inline(height),
+        },
+    )?;
+    Ok(terminal)
+}
 
-impl TerminalGuard {
+/// Enables raw mode and restores it on drop — including during a panic. No alternate
+/// screen: the inline viewport keeps your scrollback visible above it.
+struct RawGuard;
+
+impl RawGuard {
     fn enter() -> Result<Self> {
         enable_raw_mode()?;
-        execute!(io::stderr(), EnterAlternateScreen)?;
         Ok(Self)
     }
 }
 
-impl Drop for TerminalGuard {
+impl Drop for RawGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stderr(), LeaveAlternateScreen);
     }
 }
 
