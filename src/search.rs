@@ -7,19 +7,97 @@ use crate::memory::CommandMemory;
 /// before matching. Deliberately excludes words that are also real commands or
 /// flags (run, find, get, list, show, all) — those stay searchable.
 const STOPWORDS: &[&str] = &[
-    "a", "an", "the", "and", "or", "but", "of", "to", "in", "on", "at", "for", "with", "by",
-    "from", "as", "i", "me", "my", "we", "us", "our", "you", "your", "it", "its", "that", "this",
-    "these", "those", "there", "then", "than", "so", "is", "am", "are", "was", "were", "be",
-    "been", "being", "do", "does", "did", "have", "has", "had", "can", "could", "will", "would",
-    "should", "may", "might", "must", "how", "what", "when", "where", "why", "who", "which",
-    "about", "just", "really", "actually", "yesterday", "today", "tomorrow", "ago", "day", "week",
-    "command", "thing", "ran", "helped", "want", "wanted", "need", "needed",
+    "a",
+    "an",
+    "the",
+    "and",
+    "or",
+    "but",
+    "of",
+    "to",
+    "in",
+    "on",
+    "at",
+    "for",
+    "with",
+    "by",
+    "from",
+    "as",
+    "i",
+    "me",
+    "my",
+    "we",
+    "us",
+    "our",
+    "you",
+    "your",
+    "it",
+    "its",
+    "that",
+    "this",
+    "these",
+    "those",
+    "there",
+    "then",
+    "than",
+    "so",
+    "is",
+    "am",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been",
+    "being",
+    "do",
+    "does",
+    "did",
+    "have",
+    "has",
+    "had",
+    "can",
+    "could",
+    "will",
+    "would",
+    "should",
+    "may",
+    "might",
+    "must",
+    "how",
+    "what",
+    "when",
+    "where",
+    "why",
+    "who",
+    "which",
+    "about",
+    "just",
+    "really",
+    "actually",
+    "yesterday",
+    "today",
+    "tomorrow",
+    "ago",
+    "day",
+    "week",
+    "command",
+    "thing",
+    "ran",
+    "helped",
+    "want",
+    "wanted",
+    "need",
+    "needed",
 ];
 
 /// Fuzzy, typo-tolerant search over each Memory's command, description, and tags,
 /// returning matches best-first. The only place that touches the fuzzy backend
 /// (frizbee), so swapping matchers stays a one-file change.
-pub fn search<'a>(query: &str, memories: &'a [CommandMemory], limit: usize) -> Vec<&'a CommandMemory> {
+pub fn search<'a>(
+    query: &str,
+    memories: &'a [CommandMemory],
+    limit: usize,
+) -> Vec<&'a CommandMemory> {
     if query.trim().is_empty() || memories.is_empty() {
         return Vec::new();
     }
@@ -115,9 +193,24 @@ mod tests {
 
     fn corpus() -> Vec<CommandMemory> {
         vec![
-            mem(1, "docker ps", Some("list running (active) docker containers"), &["docker", "containers"]),
-            mem(2, "docker ps -a", Some("list all docker containers including stopped"), &["docker", "containers"]),
-            mem(3, "git reflog --date=iso", Some("recover a lost commit"), &["git"]),
+            mem(
+                1,
+                "docker ps",
+                Some("list running (active) docker containers"),
+                &["docker", "containers"],
+            ),
+            mem(
+                2,
+                "docker ps -a",
+                Some("list all docker containers including stopped"),
+                &["docker", "containers"],
+            ),
+            mem(
+                3,
+                "git reflog --date=iso",
+                Some("recover a lost commit"),
+                &["git"],
+            ),
         ]
     }
 
@@ -132,7 +225,10 @@ mod tests {
         // The sentence names both "all" and "active", so both docker commands are
         // relevant and should top the results; the unrelated git entry should not.
         let top: Vec<i64> = hits.iter().take(2).map(|m| m.id).collect();
-        assert!(top.contains(&1) && top.contains(&2), "expected docker commands on top, got {top:?}");
+        assert!(
+            top.contains(&1) && top.contains(&2),
+            "expected docker commands on top, got {top:?}"
+        );
     }
 
     #[test]
@@ -161,7 +257,10 @@ mod tests {
         let draft = mem(1, "docker ps", None, &["docker"]);
         let curated = mem(2, "docker ps", Some("list running containers"), &["docker"]);
         let memories = [draft, curated];
-        assert_eq!(search("docker", &memories, 10).first().map(|m| m.id), Some(2));
+        assert_eq!(
+            search("docker", &memories, 10).first().map(|m| m.id),
+            Some(2)
+        );
     }
 
     #[test]

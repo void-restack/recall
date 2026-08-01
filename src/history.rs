@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 /// own invocations skipped. Best-effort across zsh and bash history formats.
 pub fn recent(file: Option<PathBuf>, limit: usize) -> Result<Vec<String>> {
     let path = resolve(file)?;
-    let bytes = std::fs::read(&path)
-        .with_context(|| format!("reading history {}", path.display()))?;
+    let bytes =
+        std::fs::read(&path).with_context(|| format!("reading history {}", path.display()))?;
     // zsh stores bytes >= 0x80 metafied, and the file need not be valid UTF-8.
     let decoded = unmetafy(&bytes);
     let text = String::from_utf8_lossy(&decoded);
@@ -107,7 +107,8 @@ mod tests {
 
     #[test]
     fn extract_reverses_dedupes_and_skips_recall() {
-        let text = ": 1:0;docker ps\n: 2:0;docker ps\ngit status\nrecall add foo\n#1700000000\nls\n";
+        let text =
+            ": 1:0;docker ps\n: 2:0;docker ps\ngit status\nrecall add foo\n#1700000000\nls\n";
         assert_eq!(extract(text, 10), vec!["ls", "git status", "docker ps"]);
     }
 

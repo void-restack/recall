@@ -26,14 +26,18 @@ impl Store {
 
     #[cfg(test)]
     fn in_memory() -> Result<Self> {
-        let store = Self { conn: Connection::open_in_memory()? };
+        let store = Self {
+            conn: Connection::open_in_memory()?,
+        };
         store.migrate()?;
         Ok(store)
     }
 
     fn migrate(&self) -> Result<()> {
         // Each step runs once and bumps `user_version`; new steps append below.
-        let version: i64 = self.conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version < 1 {
             self.conn.execute_batch(
                 "CREATE TABLE IF NOT EXISTS memories (
@@ -206,7 +210,10 @@ mod tests {
         edited.description = Some("list running containers".into());
         store.update(&edited, 200).unwrap();
         let reloaded = store.get(1).unwrap().unwrap();
-        assert_eq!(reloaded.description.as_deref(), Some("list running containers"));
+        assert_eq!(
+            reloaded.description.as_deref(),
+            Some("list running containers")
+        );
         assert_eq!(reloaded.updated_at, 200);
 
         assert!(store.delete(1).unwrap());

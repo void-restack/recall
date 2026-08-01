@@ -3,8 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 
 use crate::cli::{
-    AddArgs, DeleteArgs, EditArgs, GetArgs, HistoryArgs, ImportArgs, InitArgs, ListArgs, SearchArgs,
-    Shell,
+    AddArgs, DeleteArgs, EditArgs, GetArgs, HistoryArgs, ImportArgs, InitArgs, ListArgs,
+    SearchArgs, Shell,
 };
 use crate::memory::{self, CommandMemory, ImportRecord, NewMemory};
 use crate::store::Store;
@@ -18,13 +18,21 @@ pub fn add(args: AddArgs) -> Result<()> {
     // With no command argument and no annotation flags, an interactive terminal
     // gets the capture form; --last pre-fills it with the previous command.
     if interactive && no_annotations && args.command.is_none() {
-        let initial = if args.last { read_last_command()? } else { String::new() };
+        let initial = if args.last {
+            read_last_command()?
+        } else {
+            String::new()
+        };
         return add_via_form(initial, args.force);
     }
 
     let command = resolve_command(args.command, args.last)?;
     warn_about_secrets(&command, args.force)?;
-    save_new(command, clean_description(args.description), memory::normalize_tags(args.tag))
+    save_new(
+        command,
+        clean_description(args.description),
+        memory::normalize_tags(args.tag),
+    )
 }
 
 fn add_via_form(initial: String, force: bool) -> Result<()> {
@@ -34,7 +42,11 @@ fn add_via_form(initial: String, force: bool) -> Result<()> {
     };
     warn_about_secrets(&form.command, force)?;
     let tags = memory::normalize_tags(split_tags(&form.tags));
-    save_new(form.command, clean_description(Some(form.description)), tags)
+    save_new(
+        form.command,
+        clean_description(Some(form.description)),
+        tags,
+    )
 }
 
 fn split_tags(raw: &str) -> Vec<String> {
@@ -48,7 +60,11 @@ fn split_tags(raw: &str) -> Vec<String> {
 fn save_new(command: String, description: Option<String>, tags: Vec<String>) -> Result<()> {
     let store = Store::open()?;
     let duplicates = store.ids_with_command(&command)?;
-    let new = NewMemory { command, description, tags };
+    let new = NewMemory {
+        command,
+        description,
+        tags,
+    };
     let saved = store.insert(&new, now_millis())?;
 
     // id to stdout (scriptable), status to stderr.
@@ -213,8 +229,8 @@ pub fn import(args: ImportArgs) -> Result<()> {
         if line.trim().is_empty() {
             continue;
         }
-        let record: ImportRecord =
-            serde_json::from_str(&line).with_context(|| format!("line {}: invalid record", n + 1))?;
+        let record: ImportRecord = serde_json::from_str(&line)
+            .with_context(|| format!("line {}: invalid record", n + 1))?;
         if record.command.trim().is_empty() {
             anyhow::bail!("line {}: record has an empty command", n + 1);
         }
@@ -246,7 +262,11 @@ pub fn history(args: HistoryArgs) -> Result<()> {
     };
     warn_about_secrets(&form.command, false)?;
     let tags = memory::normalize_tags(split_tags(&form.tags));
-    save_new(form.command, clean_description(Some(form.description)), tags)
+    save_new(
+        form.command,
+        clean_description(Some(form.description)),
+        tags,
+    )
 }
 
 pub fn edit(args: EditArgs) -> Result<()> {
@@ -307,7 +327,10 @@ fn warn_about_secrets(command: &str, force: bool) -> Result<()> {
     if found.is_empty() {
         return Ok(());
     }
-    eprintln!("warning: this command may contain a secret ({})", found.join(", "));
+    eprintln!(
+        "warning: this command may contain a secret ({})",
+        found.join(", ")
+    );
     if force || !std::io::stdin().is_terminal() {
         return Ok(());
     }

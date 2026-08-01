@@ -95,7 +95,12 @@ fn filter(query: &str, memories: &[CommandMemory]) -> Vec<usize> {
         .collect()
 }
 
-fn refilter(query: &str, memories: &[CommandMemory], results: &mut Vec<usize>, state: &mut ListState) {
+fn refilter(
+    query: &str,
+    memories: &[CommandMemory],
+    results: &mut Vec<usize>,
+    state: &mut ListState,
+) {
     *results = filter(query, memories);
     let selected = if results.is_empty() {
         None
@@ -122,9 +127,12 @@ fn render_picker(
     state: &mut ListState,
     confirming: bool,
 ) {
-    let [top, middle, help] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
-            .areas(f.area());
+    let [top, middle, help] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
     f.render_widget(
         Paragraph::new(format!("search: {query}")).block(Block::bordered().title("recall")),
         top,
@@ -141,8 +149,15 @@ fn render_picker(
         preview_area,
     );
 
-    let items: Vec<ListItem> = results.iter().map(|&i| ListItem::new(row_line(&memories[i]))).collect();
-    let title = format!("{} match{}", results.len(), if results.len() == 1 { "" } else { "es" });
+    let items: Vec<ListItem> = results
+        .iter()
+        .map(|&i| ListItem::new(row_line(&memories[i])))
+        .collect();
+    let title = format!(
+        "{} match{}",
+        results.len(),
+        if results.len() == 1 { "" } else { "es" }
+    );
     let list = List::new(items)
         .block(Block::bordered().title(title))
         .highlight_symbol("▌ ")
@@ -247,24 +262,39 @@ fn reselect(state: &mut ListState, len: usize) {
     state.select(selected);
 }
 
-fn render_history(f: &mut Frame, query: &str, results: &[usize], entries: &[String], state: &mut ListState) {
-    let [top, list, help] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(1), Constraint::Length(1)])
-            .areas(f.area());
+fn render_history(
+    f: &mut Frame,
+    query: &str,
+    results: &[usize],
+    entries: &[String],
+    state: &mut ListState,
+) {
+    let [top, list, help] = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ])
+    .areas(f.area());
     f.render_widget(
         Paragraph::new(format!("history: {query}"))
             .block(Block::bordered().title("promote a command into a memory")),
         top,
     );
 
-    let items: Vec<ListItem> = results.iter().map(|&i| ListItem::new(entries[i].as_str())).collect();
+    let items: Vec<ListItem> = results
+        .iter()
+        .map(|&i| ListItem::new(entries[i].as_str()))
+        .collect();
     let widget = List::new(items)
         .block(Block::bordered().title(format!("{} shown", results.len())))
         .highlight_symbol("▌ ")
         .highlight_style(Style::new().add_modifier(Modifier::REVERSED));
     f.render_stateful_widget(widget, list, state);
 
-    f.render_widget(Paragraph::new("↑/↓ move · enter annotate & save · esc cancel"), help);
+    f.render_widget(
+        Paragraph::new("↑/↓ move · enter annotate & save · esc cancel"),
+        help,
+    );
 }
 
 /// What the add/edit form collected. Tags are raw text, split and normalized by the caller.
@@ -366,8 +396,18 @@ fn render_form(f: &mut Frame, form: &FormState) {
     .areas(f.area());
 
     f.render_widget(field(&form.command, "command", form.focus == 0), command);
-    f.render_widget(field(&form.description, "why (description)", form.focus == 1), description);
-    f.render_widget(field(&form.tags, "tags (space or comma separated)", form.focus == 2), tags);
+    f.render_widget(
+        field(&form.description, "why (description)", form.focus == 1),
+        description,
+    );
+    f.render_widget(
+        field(
+            &form.tags,
+            "tags (space or comma separated)",
+            form.focus == 2,
+        ),
+        tags,
+    );
     f.render_widget(Paragraph::new("tab move · enter save · esc cancel"), help);
 }
 
@@ -378,7 +418,8 @@ fn field<'a>(value: &'a str, label: &'a str, focused: bool) -> Paragraph<'a> {
     } else {
         Style::new()
     };
-    Paragraph::new(format!("{value}{cursor}")).block(Block::bordered().title(label).border_style(border))
+    Paragraph::new(format!("{value}{cursor}"))
+        .block(Block::bordered().title(label).border_style(border))
 }
 
 /// Restores cooked mode and the main screen on drop — including during a panic.
@@ -419,7 +460,10 @@ mod tests {
 
     #[test]
     fn empty_query_shows_everything() {
-        let memories = vec![mem(1, "docker ps", None, &[]), mem(2, "git stash", None, &[])];
+        let memories = vec![
+            mem(1, "docker ps", None, &[]),
+            mem(2, "git stash", None, &[]),
+        ];
         assert_eq!(filter("", &memories), vec![0, 1]);
     }
 
@@ -444,7 +488,12 @@ mod tests {
 
     #[test]
     fn preview_shows_the_description_and_usage() {
-        let memories = vec![mem(1, "docker ps", Some("list running containers"), &["docker"])];
+        let memories = vec![mem(
+            1,
+            "docker ps",
+            Some("list running containers"),
+            &["docker"],
+        )];
         let text = preview_text(&[0], &memories, Some(0));
         assert!(text.contains("docker ps"));
         assert!(text.contains("list running containers"));
@@ -453,7 +502,12 @@ mod tests {
 
     #[test]
     fn renders_query_list_and_preview() {
-        let memories = vec![mem(1, "docker ps", Some("list running containers"), &["docker"])];
+        let memories = vec![mem(
+            1,
+            "docker ps",
+            Some("list running containers"),
+            &["docker"],
+        )];
         let results = vec![0usize];
         let mut state = ListState::default();
         state.select(Some(0));

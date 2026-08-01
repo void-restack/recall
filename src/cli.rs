@@ -1,7 +1,11 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
-#[command(name = "recall", version, about = "Local-first command memory for your terminal")]
+#[command(
+    name = "recall",
+    version,
+    about = "Local-first command memory for your terminal"
+)]
 pub struct Cli {
     /// Use a specific database file instead of the default (also via RECALL_DB)
     #[arg(long, global = true, env = "RECALL_DB", value_name = "PATH")]
