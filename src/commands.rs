@@ -73,7 +73,7 @@ pub fn pick() -> Result<()> {
     }
     if let Some(index) = crate::tui::run(&memories)? {
         let chosen = &memories[index];
-        store.record_use(chosen.id)?;
+        store.record_use(chosen.id, now_millis())?;
         println!("{}", chosen.command);
     }
     Ok(())
@@ -112,7 +112,7 @@ pub fn get(args: GetArgs) -> Result<()> {
     match store.get(args.id)? {
         Some(m) => {
             println!("{}", m.command);
-            store.record_use(m.id)?;
+            store.record_use(m.id, now_millis())?;
             Ok(())
         }
         None => anyhow::bail!("no memory #{}", args.id),

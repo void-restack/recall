@@ -42,8 +42,16 @@ pub fn search<'a>(query: &str, memories: &'a [CommandMemory], limit: usize) -> V
         }
     }
 
+    // Relevance first (terms matched, then match quality); usage only breaks ties,
+    // so a command you reuse often — and more recently — wins between equal matches.
     let mut ranked: Vec<usize> = (0..memories.len()).filter(|&i| matched[i] > 0).collect();
-    ranked.sort_by(|&a, &b| matched[b].cmp(&matched[a]).then(score[b].cmp(&score[a])));
+    ranked.sort_by(|&a, &b| {
+        matched[b]
+            .cmp(&matched[a])
+            .then(score[b].cmp(&score[a]))
+            .then(memories[b].use_count.cmp(&memories[a].use_count))
+            .then(memories[b].last_used_at.cmp(&memories[a].last_used_at))
+    });
     ranked.truncate(limit);
     ranked.into_iter().map(|i| &memories[i]).collect()
 }
@@ -85,6 +93,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             use_count: 0,
+            last_used_at: None,
         }
     }
 
@@ -129,5 +138,16 @@ mod tests {
     fn no_matches_returns_empty() {
         let c = corpus();
         assert!(search("zzzznomatch", &c, 10).is_empty());
+    }
+
+    #[test]
+    fn equal_matches_break_toward_the_more_used() {
+        let mut a = mem(1, "docker ps", Some("list containers"), &["docker"]);
+        let mut b = mem(2, "docker ps", Some("list containers"), &["docker"]);
+        a.use_count = 0;
+        b.use_count = 12;
+        let memories = [a, b];
+        let hits = search("docker", &memories, 10);
+        assert_eq!(hits.first().map(|m| m.id), Some(2));
     }
 }

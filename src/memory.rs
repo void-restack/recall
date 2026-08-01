@@ -11,6 +11,7 @@ pub struct CommandMemory {
     pub created_at: i64,
     pub updated_at: i64,
     pub use_count: i64,
+    pub last_used_at: Option<i64>,
 }
 
 impl CommandMemory {
@@ -63,6 +64,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             use_count: 0,
+            last_used_at: None,
         };
         assert!(m.is_draft());
         m.description = Some("reclaim disk".into());

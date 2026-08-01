@@ -48,6 +48,12 @@ impl Store {
                 PRAGMA user_version = 1;",
             )?;
         }
+        if version < 2 {
+            self.conn.execute_batch(
+                "ALTER TABLE memories ADD COLUMN last_used_at INTEGER;
+                 PRAGMA user_version = 2;",
+            )?;
+        }
         Ok(())
     }
 
@@ -66,12 +72,13 @@ impl Store {
             created_at: now,
             updated_at: now,
             use_count: 0,
+            last_used_at: None,
         })
     }
 
     pub fn get(&self, id: i64) -> Result<Option<CommandMemory>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, description, tags, created_at, updated_at, use_count
+            "SELECT id, command, description, tags, created_at, updated_at, use_count, last_used_at
              FROM memories WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map([id], row_to_memory)?;
@@ -80,7 +87,7 @@ impl Store {
 
     pub fn list(&self) -> Result<Vec<CommandMemory>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, command, description, tags, created_at, updated_at, use_count
+            "SELECT id, command, description, tags, created_at, updated_at, use_count, last_used_at
              FROM memories ORDER BY created_at DESC",
         )?;
         let rows = stmt.query_map([], row_to_memory)?;
@@ -108,9 +115,11 @@ impl Store {
         Ok(changed > 0)
     }
 
-    pub fn record_use(&self, id: i64) -> Result<()> {
-        self.conn
-            .execute("UPDATE memories SET use_count = use_count + 1 WHERE id = ?1", [id])?;
+    pub fn record_use(&self, id: i64, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE memories SET use_count = use_count + 1, last_used_at = ?2 WHERE id = ?1",
+            rusqlite::params![id, now],
+        )?;
         Ok(())
     }
 
@@ -134,6 +143,7 @@ fn row_to_memory(row: &Row) -> rusqlite::Result<CommandMemory> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         use_count: row.get("use_count")?,
+        last_used_at: row.get("last_used_at")?,
     })
 }
 
@@ -177,12 +187,15 @@ mod tests {
     }
 
     #[test]
-    fn record_use_increments_count() {
+    fn record_use_counts_and_stamps_last_used() {
         let store = Store::in_memory().unwrap();
         let m = store.insert(&sample(), 0).unwrap();
-        store.record_use(m.id).unwrap();
-        store.record_use(m.id).unwrap();
-        assert_eq!(store.get(m.id).unwrap().unwrap().use_count, 2);
+        assert!(m.last_used_at.is_none());
+        store.record_use(m.id, 300).unwrap();
+        store.record_use(m.id, 500).unwrap();
+        let reloaded = store.get(m.id).unwrap().unwrap();
+        assert_eq!(reloaded.use_count, 2);
+        assert_eq!(reloaded.last_used_at, Some(500));
     }
 
     #[test]

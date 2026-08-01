@@ -151,6 +151,7 @@ mod tests {
             created_at: 0,
             updated_at: 0,
             use_count: 0,
+            last_used_at: None,
         }
     }
 
