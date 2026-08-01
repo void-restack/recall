@@ -6,9 +6,27 @@ use anyhow::{Context, Result};
 /// own invocations skipped. Best-effort across zsh and bash history formats.
 pub fn recent(file: Option<PathBuf>, limit: usize) -> Result<Vec<String>> {
     let path = resolve(file)?;
-    let text = std::fs::read_to_string(&path)
+    let bytes = std::fs::read(&path)
         .with_context(|| format!("reading history {}", path.display()))?;
+    // zsh stores bytes >= 0x80 metafied, and the file need not be valid UTF-8.
+    let text = String::from_utf8_lossy(&unmetafy(&bytes));
     Ok(extract(&text, limit))
+}
+
+/// Reverse zsh's history metafication: a `0x83` byte escapes the next byte as `byte ^ 0x20`.
+fn unmetafy(bytes: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().copied();
+    while let Some(byte) = iter.next() {
+        if byte == 0x83 {
+            if let Some(escaped) = iter.next() {
+                out.push(escaped ^ 0x20);
+            }
+        } else {
+            out.push(byte);
+        }
+    }
+    out
 }
 
 fn resolve(file: Option<PathBuf>) -> Result<PathBuf> {
@@ -96,5 +114,26 @@ mod tests {
     fn extract_respects_the_limit() {
         let text = "one\ntwo\nthree\nfour\n";
         assert_eq!(extract(text, 2), vec!["four", "three"]);
+    }
+
+    #[test]
+    fn unmetafy_decodes_zsh_meta_bytes() {
+        // "é" is 0xC3 0xA9; zsh metafies each high byte as 0x83 then (byte ^ 0x20).
+        let meta = [0x83, 0xC3 ^ 0x20, 0x83, 0xA9 ^ 0x20];
+        assert_eq!(String::from_utf8(unmetafy(&meta)).unwrap(), "é");
+    }
+
+    #[test]
+    fn recent_survives_invalid_utf8() {
+        use std::io::Write;
+        let mut path = std::env::temp_dir();
+        path.push(format!("recall-hist-{}.tmp", std::process::id()));
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(b": 1:0;docker ps\n\xff\xfe junk\n")
+            .unwrap();
+        let got = recent(Some(path.clone()), 100);
+        std::fs::remove_file(&path).ok();
+        assert!(got.unwrap().iter().any(|c| c == "docker ps"));
     }
 }
