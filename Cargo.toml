@@ -1,6 +1,6 @@
 [package]
 name = "recall"
-version = "0.1.0"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.89" # frizbee's MSRV
 description = "A fast, local command memory for your terminal — save the commands you work out once, then recall them by intent."

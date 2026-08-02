@@ -7,7 +7,7 @@
 class Recall < Formula
   desc "Fast, local command memory for your terminal"
   homepage "https://github.com/void-restack/recall"
-  version "0.1.0"
+  version "0.1.2"
   license "MIT"
 
   on_macos do
