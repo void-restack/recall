@@ -74,7 +74,7 @@ collapses to a compact strip on narrow terminals. Readline editing works in ever
 
 ```bash
 # Homebrew — macOS & Linux
-brew install void-restack/recall/recall
+brew install void-restack/tap/recall
 
 # …or from source (needs Rust 1.89+)
 cargo install --git https://github.com/void-restack/recall

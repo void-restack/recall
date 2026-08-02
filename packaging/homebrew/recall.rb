@@ -1,7 +1,7 @@
 # Homebrew formula for recall.
 #
 # This installs the prebuilt binaries published by the release workflow. It is meant
-# to live in a tap repo (e.g. void-restack/homebrew-recall as Formula/recall.rb).
+# to live in a tap repo (e.g. void-restack/homebrew-tap as Formula/recall.rb).
 # After each release, update `version` and the four `sha256` values from the
 # `*.sha256` files attached to the GitHub Release.
 class Recall < Formula

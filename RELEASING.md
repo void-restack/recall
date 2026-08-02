@@ -24,11 +24,11 @@ Prebuilt binaries from the release are the source of truth; the packages below p
 
 ### Homebrew
 Formula: [`packaging/homebrew/recall.rb`](packaging/homebrew/recall.rb).
-1. Create a tap repo `void-restack/homebrew-recall` with the formula at `Formula/recall.rb`.
+1. Create a tap repo `void-restack/homebrew-tap` with the formula at `Formula/recall.rb`.
 2. After each release, update `version` and the four `sha256` values (from the release's `*.sha256` assets).
 3. Users install with:
    ```bash
-   brew install void-restack/recall/recall
+   brew install void-restack/tap/recall
    ```
 
 ### Nix
@@ -61,7 +61,7 @@ Template: [`packaging/aur/PKGBUILD`](packaging/aur/PKGBUILD).
 2. Regenerate `.SRCINFO` (`makepkg --printsrcinfo > .SRCINFO`) and push to the `recall` AUR repo.
 
 ## Needs your accounts / one-time setup
-- **Homebrew tap** repo (`homebrew-recall`).
+- **Homebrew tap** repo (`homebrew-tap`).
 - **AUR** account + SSH key to push the `recall` package.
 - No crates.io step: the `recall` id is taken, so recall is not published to crates.io.
 - The release workflow uses the built-in `GITHUB_TOKEN` — no secrets to configure.

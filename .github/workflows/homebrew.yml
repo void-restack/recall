@@ -1,10 +1,10 @@
 name: Update Homebrew tap
 
 # Regenerates Formula/recall.rb in the tap repo from the release's checksums, so
-# `brew install void-restack/recall/recall` (and `brew upgrade`) tracks each release.
+# `brew install void-restack/tap/recall` (and `brew upgrade`) tracks each release.
 #
 # One-time setup by the maintainer:
-#   1. Create a public repo `void-restack/homebrew-recall` with `Formula/recall.rb`
+#   1. Create a public repo `void-restack/homebrew-tap` with `Formula/recall.rb`
 #      (any valid stub — this workflow overwrites it on the first release).
 #   2. Create a PAT with Contents:read+write on that tap repo and add it to THIS repo
 #      as the secret `HOMEBREW_TAP_TOKEN` (GITHUB_TOKEN cannot push cross-repo).
@@ -44,7 +44,7 @@ jobs:
       - name: Checkout tap
         uses: actions/checkout@v7
         with:
-          repository: void-restack/homebrew-recall
+          repository: void-restack/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: tap
 
