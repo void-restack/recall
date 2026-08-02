@@ -12,6 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: Verify tag matches Cargo.toml version
+        run: |
+          CARGO_VER=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          test "v$CARGO_VER" = "${GITHUB_REF_NAME}" \
+            || { echo "tag ${GITHUB_REF_NAME} != Cargo.toml v$CARGO_VER"; exit 1; }
       - name: Create a draft release
         run: gh release create "${GITHUB_REF_NAME}" --draft --title "${GITHUB_REF_NAME}" --generate-notes
         env:
@@ -28,6 +33,8 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
           - target: x86_64-apple-darwin
             os: macos-latest
@@ -48,5 +55,43 @@ jobs:
           checksum: sha256
           tar: unix
           zip: none
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Debian (.deb) and RPM (.rpm) packages for the dominant x86_64 arch.
+  packages:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+      - name: Build release binary
+        run: cargo build --release --locked
+      - name: Build .deb
+        run: cargo deb --no-build
+      - name: Build .rpm
+        run: cargo generate-rpm
+      - name: Attach packages to the release
+        run: |
+          gh release upload "${GITHUB_REF_NAME}" \
+            target/debian/*.deb \
+            target/generate-rpm/*.rpm \
+            --clobber
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Flip the draft to published once every artifact is attached, so download URLs
+  # work, /releases/latest resolves, and the Homebrew tap-update workflow fires.
+  publish-release:
+    needs: [upload-binaries, packages]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Publish the release
+        run: gh release edit "${GITHUB_REF_NAME}" --draft=false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

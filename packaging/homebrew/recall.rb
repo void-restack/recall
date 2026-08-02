@@ -23,11 +23,11 @@ class Recall < Formula
 
   on_linux do
     on_arm do
-      url "https://github.com/void-restack/recall/releases/download/v#{version}/recall-v#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/void-restack/recall/releases/download/v#{version}/recall-v#{version}-aarch64-unknown-linux-musl.tar.gz"
       sha256 "REPLACE_WITH_SHA256"
     end
     on_intel do
-      url "https://github.com/void-restack/recall/releases/download/v#{version}/recall-v#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/void-restack/recall/releases/download/v#{version}/recall-v#{version}-x86_64-unknown-linux-musl.tar.gz"
       sha256 "REPLACE_WITH_SHA256"
     end
   end
