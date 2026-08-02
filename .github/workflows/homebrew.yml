@@ -38,7 +38,7 @@ jobs:
         run: |
           gh release download "${{ steps.v.outputs.tag }}" \
             --repo void-restack/recall \
-            --pattern '*.tar.gz.sha256' \
+            --pattern '*.sha256' \
             --dir checksums
 
       - name: Checkout tap
@@ -52,7 +52,7 @@ jobs:
         env:
           VERSION: ${{ steps.v.outputs.version }}
         run: |
-          h() { cut -d' ' -f1 "checksums/recall-v${VERSION}-$1.tar.gz.sha256"; }
+          h() { cut -d' ' -f1 "checksums/recall-v${VERSION}-$1.sha256"; }
           MAC_ARM=$(h aarch64-apple-darwin)
           MAC_X86=$(h x86_64-apple-darwin)
           LIN_ARM=$(h aarch64-unknown-linux-musl)
