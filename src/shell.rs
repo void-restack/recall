@@ -21,15 +21,21 @@ add-zsh-hook preexec _recall_record_last
 // a key that is already bound to something else, reporting instead of overriding.
 const ZSH_KEYS: &str = r#"
 recall-recall-widget() {
+  emulate -L zsh
+  zle -I                       # release the line editor before the full-screen child
   local selected
+  # recall draws its UI on stderr (the terminal) and prints the chosen command on stdout,
+  # captured here. Its cursor probe is handled internally, so no fd swap is needed.
   selected="$(recall </dev/tty)"
-  [[ -n "$selected" ]] && LBUFFER="${LBUFFER}${selected}"
   zle reset-prompt
+  [[ -n "$selected" ]] && LBUFFER="${LBUFFER}${selected}"
 }
 zle -N recall-recall-widget
 
 recall-save-widget() {
-  recall add --last </dev/tty >/dev/tty 2>&1
+  emulate -L zsh
+  zle -I
+  recall add --last </dev/tty >/dev/tty 2>/dev/tty
   zle reset-prompt
 }
 zle -N recall-save-widget
@@ -67,6 +73,8 @@ esac
 const BASH_KEYS: &str = r#"
 recall-recall-widget() {
   local selected
+  # UI on stderr (the terminal), chosen command on stdout, captured here. No fd swap:
+  # recall handles its own cursor probe. readline redraws the line on return.
   selected="$(recall </dev/tty)"
   READLINE_LINE="${READLINE_LINE:0:$READLINE_POINT}${selected}${READLINE_LINE:$READLINE_POINT}"
   READLINE_POINT=$(( READLINE_POINT + ${#selected} ))
@@ -74,7 +82,7 @@ recall-recall-widget() {
 bind -x '"__RECALL_KEY__": recall-recall-widget'
 
 recall-save-widget() {
-  recall add --last </dev/tty >/dev/tty 2>&1
+  recall add --last </dev/tty >/dev/tty 2>/dev/tty
 }
 bind -x '"__SAVE_KEY__": recall-save-widget'
 "#;

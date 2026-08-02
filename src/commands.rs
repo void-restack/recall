@@ -122,6 +122,8 @@ pub fn init(args: InitArgs) -> Result<()> {
 
 pub fn pick() -> Result<()> {
     use std::io::IsTerminal;
+    // The picker draws its UI on stderr, keeping stdout clean for the chosen command
+    // (which a shell widget captures). So the tty gate checks stderr.
     if !std::io::stderr().is_terminal() {
         anyhow::bail!("not a terminal — use `recall search <words>` instead");
     }

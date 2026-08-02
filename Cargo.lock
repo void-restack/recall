@@ -282,6 +282,7 @@ dependencies = [
  "crossterm_winapi",
  "derive_more",
  "document-features",
+ "filedescriptor",
  "mio",
  "parking_lot",
  "rustix",
@@ -1255,8 +1256,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "crossterm",
  "directories",
  "frizbee",
+ "libc",
  "ratatui",
  "regex",
  "rusqlite",

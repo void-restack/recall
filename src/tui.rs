@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use anyhow::Result;
-use ratatui::backend::CrosstermBackend;
+use ratatui::backend::{Backend, CrosstermBackend};
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers,
@@ -20,7 +20,7 @@ use crate::memory::CommandMemory;
 use crate::search;
 use crate::theme::Theme;
 
-type Term = Terminal<CrosstermBackend<io::Stderr>>;
+type Term = Terminal<TtyProbeBackend>;
 
 /// Persistence the live picker drives while it stays open, so edits and deletes
 /// apply without tearing the viewport down and back up. Implemented over the Store
@@ -45,9 +45,10 @@ enum Flow {
     Done(Option<CommandMemory>),
 }
 
-/// Run the picker over one persistent viewport. Draws on stderr so stdout stays
-/// clean for the selected command; returns the chosen memory, or `None` on cancel.
-/// `now` stamps relative times in the preview without the TUI reading the clock.
+/// Run the picker over one persistent viewport. Draws on stderr so stdout stays clean
+/// for the chosen command (which a shell widget captures with `$(recall)`). Returns the
+/// chosen memory, or `None` on cancel. `now` stamps relative times in the preview
+/// without the TUI reading the clock.
 pub fn run(
     store: &dyn PickerStore,
     memories: Vec<CommandMemory>,
@@ -67,7 +68,9 @@ pub fn run(
             if let Flow::Done(selection) = app.handle_event(event, store)? {
                 break 'outer selection;
             }
-            if !event::poll(Duration::ZERO)? {
+            // A 1ms (not zero) timeout: with crossterm's use-dev-tty source, poll(0) can
+            // spuriously report "no events" and defeat coalescing.
+            if !event::poll(Duration::from_millis(1))? {
                 break;
             }
             event = event::read()?;
@@ -1194,12 +1197,23 @@ fn field<'a>(value: &'a str, label: &'a str, focused: bool, theme: &Theme) -> Pa
 }
 
 /// An inline viewport anchored under the prompt (fzf-style), sized to fit but never
-/// taller than the terminal. On stderr so stdout stays free for the selection.
+/// taller than the terminal. Draws to stderr so stdout stays free for the selection.
 fn inline_terminal(desired_rows: u16) -> Result<Term> {
     let rows = size().map(|(_, r)| r).unwrap_or(24);
     let height = desired_rows.min(rows.saturating_sub(1)).max(3);
+    // Open /dev/tty for the cursor probe (see TtyProbeBackend). Its own read+write handle
+    // keeps the probe off stdin/stdout, which the widget redirects.
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")?;
+    let backend = TtyProbeBackend {
+        inner: CrosstermBackend::new(io::stderr()),
+        tty,
+        rows,
+    };
     let terminal = Terminal::with_options(
-        CrosstermBackend::new(io::stderr()),
+        backend,
         TerminalOptions {
             viewport: Viewport::Inline(height),
         },
@@ -1207,9 +1221,112 @@ fn inline_terminal(desired_rows: u16) -> Result<Term> {
     Ok(terminal)
 }
 
-/// Enables raw mode and bracketed paste, restoring both on drop — including during
-/// a panic. No alternate screen: the inline viewport keeps your scrollback visible
-/// above it.
+/// Wraps the crossterm backend to replace the one operation that hangs from a shell
+/// keybinding: the inline viewport's cursor-position probe. crossterm writes `ESC[6n`
+/// to stdout but reads the reply from stdin with no read timeout, so inside a ZLE widget
+/// (where the child often isn't the terminal's foreground group) that read takes SIGTTIN
+/// and stops the process — the "frozen picker". We instead probe on our own `/dev/tty`
+/// handle, bounded and signal-safe, and everything else delegates unchanged.
+struct TtyProbeBackend {
+    inner: CrosstermBackend<io::Stderr>,
+    tty: std::fs::File,
+    rows: u16,
+}
+
+impl Backend for TtyProbeBackend {
+    type Error = io::Error;
+
+    fn get_cursor_position(&mut self) -> io::Result<ratatui::layout::Position> {
+        Ok(ratatui::layout::Position {
+            x: 0,
+            y: cursor_row_0based(&mut self.tty, self.rows),
+        })
+    }
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a ratatui::buffer::Cell)>,
+    {
+        self.inner.draw(content)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        self.inner.hide_cursor()
+    }
+    fn show_cursor(&mut self) -> io::Result<()> {
+        self.inner.show_cursor()
+    }
+    fn set_cursor_position<P: Into<ratatui::layout::Position>>(
+        &mut self,
+        position: P,
+    ) -> io::Result<()> {
+        self.inner.set_cursor_position(position)
+    }
+    fn clear(&mut self) -> io::Result<()> {
+        self.inner.clear()
+    }
+    fn clear_region(&mut self, clear_type: ratatui::backend::ClearType) -> io::Result<()> {
+        self.inner.clear_region(clear_type)
+    }
+    fn append_lines(&mut self, n: u16) -> io::Result<()> {
+        self.inner.append_lines(n)
+    }
+    fn size(&self) -> io::Result<ratatui::layout::Size> {
+        self.inner.size()
+    }
+    fn window_size(&mut self) -> io::Result<ratatui::backend::WindowSize> {
+        self.inner.window_size()
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// Query the cursor's 0-based row on a single `/dev/tty` handle: write `ESC[6n`, then
+/// read the `ESC[row;colR` reply on the *same* fd, bounded to 200 ms. This replaces
+/// crossterm's inline probe, which splits the write/read across fd 1 and fd 0 with the
+/// timeout on `poll()` not `read()`. SIGTTIN/SIGTTOU are ignored for the duration so a
+/// background-group read can't stop us. Falls back to the bottom row on no reply.
+fn cursor_row_0based(tty: &mut std::fs::File, rows: u16) -> u16 {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+
+    let (old_ttin, old_ttou) = unsafe {
+        (
+            libc::signal(libc::SIGTTIN, libc::SIG_IGN),
+            libc::signal(libc::SIGTTOU, libc::SIG_IGN),
+        )
+    };
+    let parsed = (|| -> Option<u16> {
+        tty.write_all(b"\x1b[6n").ok()?;
+        tty.flush().ok()?;
+        let mut pfd = libc::pollfd {
+            fd: tty.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut pfd, 1, 200) } <= 0 {
+            return None;
+        }
+        let mut buf = [0u8; 32];
+        let n = tty.read(&mut buf).ok().filter(|&n| n > 0)?;
+        // Reply is ESC [ <row> ; <col> R (1-based).
+        let open = buf[..n].iter().position(|&b| b == b'[')?;
+        let rest = &buf[open + 1..n];
+        let semi = rest.iter().position(|&b| b == b';')?;
+        std::str::from_utf8(&rest[..semi]).ok()?.trim().parse().ok()
+    })();
+    unsafe {
+        libc::signal(libc::SIGTTIN, old_ttin);
+        libc::signal(libc::SIGTTOU, old_ttou);
+    }
+    parsed
+        .map(|r: u16| r.saturating_sub(1))
+        .unwrap_or_else(|| rows.saturating_sub(1))
+}
+
+/// Enables raw mode and bracketed paste, restoring both on drop — including during a
+/// panic. No alternate screen: the inline viewport keeps your scrollback visible above it.
 struct RawGuard;
 
 impl RawGuard {
