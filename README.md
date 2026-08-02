@@ -1,74 +1,69 @@
 <div align="center">
 
-<img src="assets/mascot.svg" width="164" alt="recall — a friendly elephant, because it never forgets" />
+<img src="assets/mascot.svg" width="140" alt="recall — a friendly elephant, because it never forgets" />
 
 # recall
 
 **Remember the commands you work out once — recall them by intent.**
 
-<a href="#the-loop">How it works</a> ·
-<a href="#the-picker">The picker</a> ·
-<a href="#save-from-anywhere">Save from anywhere</a> ·
-<a href="#install">Install</a>
+[The loop](#the-loop) · [The picker](#the-picker) · [Save from anywhere](#save-from-anywhere) · [Install](#install)
 
 </div>
 
 ---
 
-You spend twenty minutes getting the `ffmpeg` flags right, or the `kubectl` one‑liner that fixed prod. A month later it's gone — buried in scrollback, re‑derived from scratch.
+Twenty minutes on `ffmpeg` flags. The `kubectl` one-liner that fixed prod. A month later — gone.
 
-**recall** keeps it, with a note on *why* it mattered, and hands it back the moment you need it — found by what it *did*, not by exact syntax. It's a small, local, curated library: the commands worth keeping, searched by meaning.
+**recall** keeps it, notes *why* it mattered, and hands it back when you need it: found by what it *did*, not by exact syntax. A small, local, curated library of the commands worth keeping, searched by meaning.
 
 ## The loop
 
-The whole tool is one habit and two keystrokes:
+One habit, two keystrokes:
 
-> **run a command** → it works → <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>S</kbd> *keep it (jot the why)* → **forget the syntax** → <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>R</kbd> *recall it by intent*
+> run a command → it works → <kbd>Alt</kbd>+<kbd>S</kbd> _keep it_ → forget the syntax → <kbd>Alt</kbd>+<kbd>R</kbd> _recall it by intent_
 
-That's it. Save while it's fresh, recall when it's needed — without ever leaving your prompt.
+Save while it's fresh. Recall when it's needed. Never leave your prompt.
 
 ## What makes it nice
 
-- <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>S</kbd> **— save without breaking flow.** The command you just ran becomes a memory in one chord. No retyping, no switching to a notes app.
-- <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>R</kbd> **— recall onto your prompt.** Type what you remember, press Enter, and the command lands on your command line, ready to run or edit. It never executes on its own.
-- **Search by intent, not syntax.** `docker disk cleanup` surfaces the command even when those words aren't in it. Typos and whole sentences are fine.
-- **The right one floats up.** Ranked by what you reuse most, most recently — usually already at the top before you finish typing.
-- **Curate in place.** See a command's *why*, tags, and usage at a glance; edit, delete (with undo), or triage drafts — all inside the picker.
+- **<kbd>Alt</kbd>+<kbd>S</kbd> — save without breaking flow.** The command you just ran becomes a memory in one chord. No retyping, no switching apps.
+- **<kbd>Alt</kbd>+<kbd>R</kbd> — recall onto your prompt.** Type what you remember, press Enter, and the command lands on your command line — ready to run or edit, never executed on its own.
+- **Search by intent, not syntax.** `docker disk cleanup` finds the command even when those words aren't in it. Typos and whole sentences are fine.
+- **The right one floats up.** Ranked by what you reuse most and most recently — usually at the top before you finish typing.
+- **Curate in place.** Why, tags, and usage at a glance; edit, delete (with undo), or triage drafts — all inside the picker.
 - **Yours, and quiet.** One local SQLite file. No account, no network, no telemetry.
 
 ## The picker
 
-Press <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>R</kbd> (or just run `recall`):
+<kbd>Alt</kbd>+<kbd>R</kbd> (or just `recall`) opens the picker:
 
 ```text
 recall — ↑/↓ move · ⏎ print · ^o edit · ^x delete · ^d drafts · esc quit
-┌ recall ─────────────────────────┐┌ details ───────────────────────┐
-│ search: disk                    ││ docker system prune -af         │
-├ 1/2 ─────────────────────────────┤│   --volumes                     │
-│▌ ● docker system prune -af ...  ││                                 │
-│  ○ du -sh * | sort -h           ││ reclaim disk space by removing  │
-│                                 ││ unused docker data              │
-│                                 ││ tags: docker, cleanup           │
-│                                 ││ used 7× · last used 2d ago      │
-└──────────────────────────────────┘└─────────────────────────────────┘
+┌ recall ──────────────┐┌ details ─────────────────┐
+│ search: disk         ││ docker system prune -af  │
+├──────────────────────┤│  --volumes               │
+│▌● docker system …    ││                          │
+│  ○ du -sh * | sort…  ││ reclaim disk space by    │
+│                      ││ removing unused docker   │
+│                      ││ tags: docker, cleanup    │
+│                      ││ used 7× · last 2d ago    │
+└──────────────────────┘└──────────────────────────┘
 ```
 
-Matched characters highlight as you type · `●` / `○` mark curated vs. draft · the pane
-collapses to a compact strip on narrow terminals. Readline editing works in every field
-(<kbd>Ctrl</kbd>+<kbd>A</kbd> / <kbd>Ctrl</kbd>+<kbd>E</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, word motions), <kbd>Alt</kbd>+<kbd>Enter</kbd> adds a line to a command, and <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes a delete.
+Matched characters highlight as you type · `●`/`○` mark curated vs. draft · the pane collapses to a compact strip on narrow terminals. Readline editing works in every field (<kbd>Ctrl</kbd>+<kbd>A</kbd>/<kbd>E</kbd>, <kbd>Ctrl</kbd>+<kbd>W</kbd>, word motions), <kbd>Alt</kbd>+<kbd>Enter</kbd> adds a line to a command, and <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes a delete.
 
 ## Save from anywhere
 
-- **The command you just ran** — <kbd>Alt</kbd>&nbsp;+&nbsp;<kbd>S</kbd>. A one‑line form opens pre‑filled; add the *why* and press Enter. (Skip the note to stash a quick draft and annotate it later.)
-- **From scratch** — `recall add` opens the capture form: **command**, **why**, **tags** (the tags field even suggests ones you've used before).
-- **From your shell history** — `recall history` browses your past zsh / bash commands; fuzzy‑find, and promote any into a memory.
-- **From anywhere else** — point it at *any* command that prints one command per line:
+- **The command you just ran** — <kbd>Alt</kbd>+<kbd>S</kbd>. A one-line form opens pre-filled; add the *why* and press Enter. Skip the note to stash a quick draft and annotate it later.
+- **From scratch** — `recall add` opens the capture form: command, why, tags (with suggestions from tags you've used before).
+- **From shell history** — `recall history` browses your past zsh/bash commands; fuzzy-find and promote any into a memory.
+- **From anywhere else** — point it at anything that prints one command per line:
 
   ```bash
   recall history --file <(your-command-that-lists-commands)
   ```
 
-  Pull items in from another shell, a project runbook, a curated list — whatever you've got.
+  Pull items in from another shell, a project runbook, or a curated list.
 
 ## Install
 
@@ -84,16 +79,16 @@ Prebuilt binaries (`.tar.gz`, `.deb`, `.rpm`) are attached to every [release](ht
 
 ## Shell integration
 
-The keybindings and last‑command capture come from one line in your shell rc:
+The keybindings and last-command capture come from one line in your shell rc:
 
 ```bash
 eval "$(recall init zsh --keys)"     # ~/.zshrc
 eval "$(recall init bash --keys)"    # ~/.bashrc
 ```
 
-`--keys` binds <kbd>Alt</kbd>+<kbd>R</kbd> (recall) and <kbd>Alt</kbd>+<kbd>S</kbd> (save the last command). They're opt‑in, configurable (`--recall-key` / `--save-key`), and won't override a key you've already bound.
+`--keys` binds <kbd>Alt</kbd>+<kbd>R</kbd> (recall) and <kbd>Alt</kbd>+<kbd>S</kbd> (save the last command). They're opt-in, configurable (`--recall-key` / `--save-key`), and won't override a key you've already bound.
 
-> On macOS, set your terminal to send **Option as Meta / Esc+** so `Alt+` combos reach the shell (Terminal.app: *Use Option as Meta key*; iTerm2 / kitty have an equivalent).
+> On macOS, set your terminal to send **Option as Meta / Esc+** so `Alt`+ combos reach the shell (Terminal.app: *Use Option as Meta key*; iTerm2 / kitty have an equivalent).
 
 <details>
 <summary><b>Command reference</b> — everything the keys do, as plain commands</summary>
@@ -135,15 +130,15 @@ Layered so each concern stays swappable:
 | Search (fuzzy matcher) | `search.rs` |
 | Inline TUI | `tui.rs`, `line_editor.rs`, `theme.rs` |
 
-The fuzzy backend is touched only in `search.rs`, so swapping matchers is a one‑file change.
+The fuzzy backend is touched only in `search.rs`, so swapping matchers is a one-file change.
 
 ## Data & privacy
 
-Everything is a single SQLite file (`~/.local/share/recall/recall.db` on Linux,
-`~/Library/Application Support/recall/recall.db` on macOS), created with user‑only
+Everything lives in a single SQLite file (`~/.local/share/recall/recall.db` on Linux,
+`~/Library/Application Support/recall/recall.db` on macOS), created with user-only
 permissions. Selecting a command only *prints* it — nothing runs on its own — and saving
-warns when a command looks like it holds a secret. `recall export` / `recall import`
-round‑trip the whole collection through JSONL any time.
+warns when a command looks like it holds a secret. `recall export` / `import` round-trip
+the whole collection as JSONL any time.
 
 ## License
 
