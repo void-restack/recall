@@ -135,7 +135,7 @@ Layered so each concern stays swappable:
 | Search (fuzzy matcher) | `search.rs` |
 | Inline TUI | `tui.rs`, `line_editor.rs`, `theme.rs` |
 
-Design decisions live in [`docs/adr/`](docs/adr/) and the domain glossary in [`CONTEXT.md`](CONTEXT.md). The fuzzy backend is touched only in `search.rs`, so swapping matchers is a one‑file change.
+The fuzzy backend is touched only in `search.rs`, so swapping matchers is a one‑file change.
 
 ## Data & privacy
 
