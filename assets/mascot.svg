@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" fill="none" role="img" aria-label="recall">
+  <title>recall</title>
+  <!-- soft blue-grey, classic -->
+  <ellipse cx="50" cy="106" rx="40" ry="50" fill="#b9c5dd"/>
+  <ellipse cx="190" cy="106" rx="40" ry="50" fill="#b9c5dd"/>
+  <ellipse cx="58" cy="108" rx="21" ry="29" fill="#a6b3d1"/>
+  <ellipse cx="182" cy="108" rx="21" ry="29" fill="#a6b3d1"/>
+  <ellipse cx="120" cy="114" rx="72" ry="66" fill="#b9c5dd"/>
+  <path d="M120 168 C121 197 108 216 127 221 C144 225 145 206 134 202" stroke="#b9c5dd" stroke-width="22" stroke-linecap="round"/>
+  <path d="M104 172 q-5 12 3 20" stroke="#fbf7f0" stroke-width="6.5" stroke-linecap="round"/>
+  <path d="M136 172 q5 12 -3 20" stroke="#fbf7f0" stroke-width="6.5" stroke-linecap="round"/>
+  <circle cx="97" cy="105" r="9.5" fill="#5c6775"/>
+  <circle cx="143" cy="105" r="9.5" fill="#5c6775"/>
+  <circle cx="100" cy="101.5" r="3.3" fill="#fbf7f0"/>
+  <circle cx="146" cy="101.5" r="3.3" fill="#fbf7f0"/>
+  <circle cx="74" cy="133" r="8.5" fill="#eec2c6"/>
+  <circle cx="166" cy="133" r="8.5" fill="#eec2c6"/>
+</svg>
